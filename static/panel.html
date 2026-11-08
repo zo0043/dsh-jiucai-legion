@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>韭菜军团 · 模拟沙盘面板</title>
+<style>
+:root { --bg:#0f1115; --card:#181b22; --line:#262b36; --txt:#d7dce6; --dim:#8b93a3; --green:#4ade80; --red:#f87171; --amber:#fbbf24; --accent:#7dd3fc; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--txt); font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+header { display:flex; align-items:center; gap:16px; padding:12px 20px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+header h1 { font-size:18px; }
+header .sub { color:var(--dim); font-size:12px; }
+.tabs { display:flex; gap:8px; margin-left:auto; }
+.tabs button { background:var(--card); color:var(--txt); border:1px solid var(--line); padding:6px 14px; border-radius:8px; cursor:pointer; }
+.tabs button.on { background:var(--accent); color:#0b0d10; border-color:var(--accent); font-weight:600; }
+main { padding:20px; max-width:1100px; margin:0 auto; }
+.view { display:none; } .view.on { display:block; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+.card h3 { font-size:14px; color:var(--dim); margin-bottom:10px; font-weight:600; }
+.row { display:flex; gap:16px; flex-wrap:wrap; } .row > .card { flex:1; min-width:280px; }
+.big { font-size:34px; font-weight:700; }
+.green { color:var(--green); } .red { color:var(--red); } .amber { color:var(--amber); } .dim { color:var(--dim); }
+.banner { padding:10px 16px; border-radius:10px; background:#13202b; border:1px solid #1e3a4c; margin-bottom:16px; }
+.warn { padding:10px 16px; border-radius:10px; background:#2a2113; border:1px solid #4c3a1e; margin-bottom:16px; }
+select, input[type=text] { background:#0d0f13; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:6px 10px; }
+button.act { background:var(--accent); color:#0b0d10; border:none; border-radius:8px; padding:6px 14px; cursor:pointer; font-weight:600; }
+button.act.ghost { background:var(--card); color:var(--txt); border:1px solid var(--line); }
+.quote { border-left:3px solid var(--accent); padding:6px 10px; margin:8px 0; background:#131720; border-radius:0 8px 8px 0; font-size:13px; }
+.md h1 { font-size:18px; margin:10px 0 6px; } .md h2 { font-size:16px; margin:10px 0 4px; }
+.md li { margin-left:18px; } .md p { margin:6px 0; } .md strong { color:var(--accent); }
+.feed { max-height:320px; overflow-y:auto; }
+.feed .item { padding:6px 10px; border-bottom:1px solid var(--line); font-size:13px; animation:slidein .3s ease; }
+@keyframes slidein { from { opacity:0; transform:translateY(-6px);} to { opacity:1; } }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+.pcard { background:#131720; border:1px solid var(--line); border-radius:10px; padding:10px; cursor:pointer; transition:border-color .15s; }
+.pcard:hover { border-color:var(--accent); }
+.pcard .nm { font-weight:600; } .pcard .meta { color:var(--dim); font-size:12px; }
+.dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; }
+.modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; }
+.modal.on { display:flex; }
+.modal .inner { background:var(--card); border:1px solid var(--line); border-radius:14px; max-width:640px; width:92%; max-height:84vh; overflow-y:auto; padding:20px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+td, th { padding:5px 8px; border-bottom:1px solid var(--line); text-align:left; }
+th { color:var(--dim); font-weight:500; }
+footer { text-align:center; color:var(--dim); font-size:12px; padding:18px; border-top:1px solid var(--line); }
+.slider { width:100%; }
+.btns { display:flex; gap:8px; margin:10px 0; }
+.kv { color:var(--dim); font-size:12px; }
+.light { display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--green); margin-right:6px; }
+.light.bad { background:var(--red); } .light.warn { background:var(--amber); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🥬 韭菜军团</h1>
+  <span class="sub">A股散户群体博弈模拟 · 引擎结果只读展示（#8）</span>
+  <div class="tabs">
+    <button data-v="pred" class="on">预测页</button>
+    <button data-v="sandbox">沙盘页</button>
+    <button data-v="legion">军团与设置</button>
+  </div>
+</header>
+<main>
+  <div id="empty-hint" class="warn" style="display:none"></div>
+
+  <!-- ══════════ 预测页 ══════════ -->
+  <section class="view on" id="view-pred">
+    <div class="card">
+      <h3>选择预测记录</h3>
+      <select id="pred-sel"></select>
+      <span class="kv" id="pred-anchor" style="margin-left:12px"></span>
+    </div>
+    <div class="banner" id="hit-banner">命中率：加载中…</div>
+    <div id="pred-warn"></div>
+    <div class="row">
+      <div class="card">
+        <h3>5 日路径与置信区间（误差累积逐日加宽，#20）</h3>
+        <div id="path-chart"></div>
+        <div class="kv" id="pred-terminal"></div>
+      </div>
+      <div class="card">
+        <h3>多空统计（中位轮）</h3>
+        <div class="big" id="bull-big"></div>
+        <div id="camp-bar" style="display:flex;height:14px;border-radius:7px;overflow:hidden;margin:10px 0;background:#222"></div>
+        <div class="kv" id="camp-legend">绿=加仓 红=减仓 灰=持稳（相对当前仓位，#51 结算口径）</div>
+        <h3 style="margin-top:14px">代表性发言</h3>
+        <div id="quotes"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>总编日报 · 今日散户生态观察（#30）</h3>
+      <div class="md" id="pred-report"></div>
+    </div>
+    <div class="card">
+      <h3>历史对账明细（平局剔除分母，#44）</h3>
+      <table id="reconcile-table"></table>
+    </div>
+  </section>
+
+  <!-- ══════════ 沙盘页 ══════════ -->
+  <section class="view" id="view-sandbox">
+    <div class="card">
+      <h3>沙盘回放（重放已落盘轨迹，不重跑——#44 技术默认）</h3>
+      <select id="sbx-sel"></select>
+      <div class="btns">
+        <button class="act" id="sbx-play">▶ 播放</button>
+        <button class="act ghost" id="sbx-step">步进 ▸</button>
+        <input type="range" class="slider" id="sbx-slider" min="0" max="0" value="0">
+        <span class="kv" id="sbx-daylabel"></span>
+      </div>
+      <div id="sbx-chart"></div>
+      <div class="row" style="margin-top:12px">
+        <div class="card" style="flex:0 0 220px">
+          <h3>当日军团倾向（#50 回流显示）</h3>
+          <div class="big" id="sbx-bull"></div>
+          <div class="kv" id="sbx-nf"></div>
+          <h3 style="margin-top:12px">活跃事件卡（#42）</h3>
+          <div class="kv" id="sbx-events">（无）</div>
+        </div>
+        <div class="card" style="flex:1">
+          <h3>军团发言流（当日 30 人，#29 现场感）</h3>
+          <div class="feed" id="sbx-feed"></div>
+        </div>
+      </div>
+      <div class="warn" style="margin-top:12px" id="sbx-note"></div>
+    </div>
+  </section>
+
+  <!-- ══════════ 军团与设置 ══════════ -->
+  <section class="view" id="view-legion">
+    <div class="card">
+      <h3>数据源状态灯（#26）与成本预估</h3>
+      <div id="src-lights" class="kv"></div>
+      <div class="kv" style="margin-top:8px" id="cost-estimate">成本预估：加载中…（按当前配置实算）</div>
+      <h3 style="margin-top:12px">当前生效设置（只读展示，按 /api/config 实时渲染；调整经 DSH 设置卡片或 config.json，面板不写盘，#26/#28）</h3>
+      <div id="cfg-list" class="kv"></div>
+    </div>
+    <div class="card">
+      <h3>军团名册（30 + 1 总编，点看档案卡，#31）</h3>
+      <div class="grid" id="pool-grid"></div>
+    </div>
+  </section>
+</main>
+
+<div class="modal" id="modal">
+  <div class="inner" id="modal-inner"></div>
+</div>
+
+<footer>⚠️ 模拟沙盘，仅供娱乐与研究，不构成任何投资建议。（#28 免责声明常驻）</footer>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtPct = (x) => (x * 100).toFixed(0) + '%';
+
+// ---------- 标签 ----------
+function activateView(name) {
+  document.querySelectorAll('.tabs button').forEach((x) => x.classList.remove('on'));
+  document.querySelectorAll('.view').forEach((x) => x.classList.remove('on'));
+  const btn = document.querySelector(`.tabs button[data-v="${name}"]`);
+  if (btn) btn.classList.add('on');
+  const view = document.getElementById('view-' + name);
+  if (view) view.classList.add('on');
+}
+document.querySelectorAll('.tabs button').forEach((b) => {
+  b.addEventListener('click', () => activateView(b.dataset.v));
+});
+// ?view=sandbox|legion 直达（面板深链/无头截图用）
+const __initialView = new URLSearchParams(location.search).get('view');
+if (__initialView) activateView(__initialView);
+
+// ---------- 极简 Markdown ----------
+function md(text) {
+  const lines = esc(text).split('\n');
+  let html = '', inList = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    let out = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    if (/^# /.test(line)) { if (inList){html+='</ul>';inList=false;} html += `<h1>${out.slice(2)}</h1>`; }
+    else if (/^## /.test(line)) { if (inList){html+='</ul>';inList=false;} html += `<h2>${out.slice(3)}</h2>`; }
+    else if (/^[-*] /.test(line)) { if (!inList){html+='<ul>';inList=true;} html += `<li>${out.slice(2)}</li>`; }
+    else { if (inList){html+='</ul>';inList=false;} if (line) html += `<p>${out}</p>`; }
+  }
+  if (inList) html += '</ul>';
+  return html;
+}
+
+// ---------- SVG 图 ----------
+function svgPathChart(days) {
+  if (!days || !days.length) return '<span class="dim">无数据</span>';
+  const W = 640, H = 220, P = 36;
+  const closes = days.map((d) => d.closeEstimate);
+  const lows = days.map((d) => d.band.p10), highs = days.map((d) => d.band.p90);
+  const all = lows.concat(highs);
+  const min = Math.min(...all), max = Math.max(...all);
+  const pad = (max - min) * 0.08 || 1;
+  const y = (v) => P + (H - 2 * P) * (1 - (v - (min - pad)) / (max + pad - (min - pad)));
+  const x = (i) => P + (W - 2 * P) * (days.length === 1 ? 0.5 : i / (days.length - 1));
+  let s = `<svg width="${W}" height="${H}" style="max-width:100%">`;
+  s += `<polygon fill="rgba(125,211,252,.15)" points="${days.map((d, i) => `${x(i)},${y(highs[i])}`).join(' ')} ${days.map((_, i) => `${x(days.length - 1 - i)},${y(lows[days.length - 1 - i])}`).join(' ')}" />`;
+  s += `<polyline fill="none" stroke="#7dd3fc" stroke-width="2" points="${days.map((d, i) => `${x(i)},${y(closes[i])}`).join(' ')}" />`;
+  days.forEach((d, i) => {
+    s += `<circle cx="${x(i)}" cy="${y(closes[i])}" r="3" fill="#7dd3fc" />`;
+    s += `<text x="${x(i)}" y="${y(closes[i]) - 10}" fill="#8b93a3" font-size="10" text-anchor="middle">${d.closeEstimate.toFixed(0)}</text>`;
+    s += `<text x="${x(i)}" y="${H - 10}" fill="#8b93a3" font-size="9" text-anchor="middle">${esc(d.tradeDate.slice(5))}</text>`;
+  });
+  return s + '</svg>';
+}
+function svgDrift(memory) {
+  if (!memory || memory.length < 2) return '<span class="dim">记忆不足两条，漂移曲线暂无法绘制（#52）</span>';
+  const W = 560, H = 160, P = 24;
+  const x = (i) => P + (W - 2 * P) * i / (memory.length - 1);
+  const yT = (v) => P + (H - 2 * P) * (1 - v / 100);
+  const yC = (v) => P + (H - 2 * P) * (1 - (v - 1) / 4);
+  const line = (acc, f, yf) => memory.map((m, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${yf(f(m)).toFixed(1)}`).join(' ');
+  let s = `<svg width="${W}" height="${H}" style="max-width:100%">`;
+  s += `<path d="${line(null, (m) => m.targetPct, yT)}" fill="none" stroke="#4ade80" stroke-width="2"/>`;
+  s += `<path d="${line(null, (m) => m.confidence, yC)}" fill="none" stroke="#fbbf24" stroke-width="2"/>`;
+  s += `<text x="${P}" y="14" fill="#4ade80" font-size="10">目标仓位%</text><text x="${P + 80}" y="14" fill="#fbbf24" font-size="10">置信度(1-5)</text>`;
+  return s + '</svg>';
+}
+
+// ---------- 数据 ----------
+async function api(pathname) {
+  const r = await fetch(pathname);
+  if (r.status === 426) throw new Error('结果 schema 版本高于面板，请升级（#28）');
+  if (!r.ok) throw new Error(`加载失败 ${r.status}`);
+  return r.json();
+}
+let POOL = null;
+function personaName(id) {
+  const p = (POOL || []).find((x) => x.id === id);
+  return p ? p.name : id;
+}
+
+async function loadRuns() {
+  try {
+    const runs = await api('/api/runs');
+    const hint = $('#empty-hint');
+    if (runs.predictions.length === 0 && runs.sandboxes.length === 0) {
+      hint.style.display = 'block';
+      hint.textContent = '还没有任何运行记录：先运行 `npm run cli -- init && npm run cli -- predict`（冷启动三步，#32）';
+      return;
+    }
+    hint.style.display = 'none';
+    $('#pred-sel').innerHTML = runs.predictions.reverse().map((d) => `<option>${esc(d)}</option>`).join('');
+    $('#sbx-sel').innerHTML = runs.sandboxes.reverse().map((d) => `<option>${esc(d)}</option>`).join('');
+    POOL = await api('/api/pool').catch(() => null);
+    if ($('#pred-sel').value) await loadPrediction($('#pred-sel').value);
+    if ($('#sbx-sel').value) loadSandbox($('#sbx-sel').value);
+    loadReconcile();
+    loadPool();
+    loadLights();
+  } catch (e) {
+    const hint = $('#empty-hint');
+    hint.style.display = 'block';
+    hint.textContent = '⚠ ' + esc(e.message);
+  }
+}
+
+async function loadPrediction(date) {
+  const r = await api('/api/run/prediction/' + encodeURIComponent(date));
+  $('#pred-anchor').innerHTML = `锚定 ${esc(r.anchorDate)} 收盘` +
+    (r.mock === true ? ' ｜ <span class="amber">⚠ mock 演示数据（不计入命中率，F21）</span>' : '');
+  $('#path-chart').innerHTML = svgPathChart(r.days);
+  $('#pred-terminal').textContent = `第 5 日终点中位 ${r.terminal.median.toFixed(0)}（分布 ${r.terminal.dist.length} 轮）`;
+  const bull = r.multiBullPct, bear = r.multiBearPct, neutral = Math.max(0, 1 - bull - bear);
+  $('#bull-big').innerHTML = `<span class="${bull >= bear ? 'green' : 'red'}">${fmtPct(bull)}</span> <span class="dim">看多</span>`;
+  $('#camp-bar').innerHTML =
+    `<div style="width:${bull * 100}%;background:var(--green)"></div>` +
+    `<div style="width:${neutral * 100}%;background:#555"></div>` +
+    `<div style="width:${bear * 100}%;background:var(--red)"></div>`;
+  $('#quotes').innerHTML = (r.representativeQuotes || []).map((q) =>
+    `<div class="quote">${esc(personaName(q.personaId))}：${esc(q.reason)}</div>`).join('') || '<span class="dim">（无）</span>';
+  $('#pred-report').innerHTML = md(r.report.markdown);
+  const warns = [];
+  if (r.dispersionNarrow) warns.push('⚠ 分歧度过窄告警（#39）：K 轮方向完全一致，分布可能偏窄。');
+  if (r.intradayNote) warns.push('⚠ ' + esc(r.intradayNote) + '（#46）');
+  if (r.coldStartNote) warns.push('ℹ ' + esc(r.coldStartNote) + '（#45）');
+  const flags = (r.report.participationNote) ? ['ℹ ' + esc(r.report.participationNote) + '（#54）'] : [];
+  $('#pred-warn').innerHTML = warns.concat(flags).map((w) => `<div class="warn">${w}</div>`).join('');
+}
+
+async function loadReconcile() {
+  const recs = await api('/api/reconcile').catch(() => []);
+  const settled = (recs || []).filter((x) => x.outcome);
+  const stat = (h) => {
+    const rs = settled.filter((x) => x.horizon === h);
+    const ties = rs.filter((x) => x.outcome === 'tie').length;
+    const hits = rs.filter((x) => x.outcome === 'hit').length;
+    const decided = rs.length - ties;
+    return `${decided > 0 ? `最近 ${decided} 次命中 ${hits} 次（${(hits / decided * 100).toFixed(0)}%）` : '暂无已结算预测'}${ties ? `，另有 ${ties} 次平局未计入` : ''}`;
+  };
+  $('#hit-banner').innerHTML = `📊 <strong>1 日</strong>：${stat('1d')} ｜ <strong>5 日</strong>：${stat('5d')}`;
+  $('#reconcile-table').innerHTML =
+    '<tr><th>锚定日</th><th>期限</th><th>预测</th><th>实际</th><th>结果</th></tr>' +
+    (recs || []).slice(-20).reverse().map((x) =>
+      `<tr><td>${esc(x.anchorDate)}</td><td>${esc(x.horizon)}</td><td>${x.predictedDirection === 1 ? '看多' : x.predictedDirection === -1 ? '看空' : '持平'}</td>` +
+      `<td>${x.actualPct === null ? '未结算' : x.actualPct.toFixed(2) + '%'}</td>` +
+      `<td class="${x.outcome === 'hit' ? 'green' : x.outcome === 'miss' ? 'red' : 'dim'}">${x.outcome ?? '…'}</td></tr>`).join('');
+}
+
+// ---------- 沙盘回放 ----------
+let SBX = null, sbxIdx = 0, sbxTimer = null;
+function stopPlay() { if (sbxTimer) { clearInterval(sbxTimer); sbxTimer = null; $('#sbx-play').textContent = '▶ 播放'; } }
+async function loadSandbox(id) {
+  stopPlay();
+  SBX = await api('/api/run/sandbox/' + encodeURIComponent(id));
+  $('#sbx-slider').max = String(SBX.days.length - 1);
+  $('#sbx-slider').value = '0';
+  sbxIdx = 0;
+  renderSbxDay();
+  $('#sbx-note').textContent = '⚠ ' + (SBX.report && SBX.report.markdown.includes('沙盘') ? '沙盘推演：外生数据冻结于第 0 日并逐日衰减，第 1 日后全部为内生演化（#41），不构成对真实市场的预测。' : SBX.note);
+}
+function renderSbxDay() {
+  if (!SBX) return;
+  const d = SBX.days[sbxIdx];
+  $('#sbx-daylabel').textContent = `第 ${d.dayIndex + 1} 日 · ${d.tradeDate} · 收盘 ${d.close.toFixed(0)}`;
+  $('#sbx-slider').value = String(sbxIdx);
+  // 价格曲线（至当前日）
+  const W = 640, H = 180, P = 30;
+  const closes = SBX.days.slice(0, sbxIdx + 1).map((x) => x.close);
+  const min = Math.min(...closes), max = Math.max(...closes);
+  const pad = (max - min) * 0.1 || 1;
+  const y = (v) => P + (H - 2 * P) * (1 - (v - (min - pad)) / (max + pad - (min - pad)));
+  const x = (i) => P + (W - 2 * P) * (closes.length === 1 ? 0.5 : i / (SBX.days.length - 1));
+  let s = `<svg width="${W}" height="${H}" style="max-width:100%">`;
+  if (closes.length > 1) s += `<polyline fill="none" stroke="${d.direction === 1 ? '#4ade80' : d.direction === -1 ? '#f87171' : '#8b93a3'}" stroke-width="2" points="${closes.map((c, i) => `${x(i)},${y(c)}`).join(' ')}" />`;
+  s += `<circle cx="${x(closes.length - 1)}" cy="${y(closes[closes.length - 1])}" r="4" fill="#fff" /></svg>`;
+  $('#sbx-chart').innerHTML = s;
+  // 大数字 + 事件
+  $('#sbx-bull').innerHTML = `<span class="${d.legionBullPct >= 0.5 ? 'green' : 'red'}">${fmtPct(d.legionBullPct)}</span>`;
+  $('#sbx-nf').textContent = `净流 ${d.netFlow.toFixed(3)} ｜ 方向 ${d.direction === 1 ? '做多' : d.direction === -1 ? '做空' : '观望'}`;
+  $('#sbx-events').innerHTML = d.activeEvents.length
+    ? d.activeEvents.map((e) => `🃏 ${esc(e.text)}（权重 ${e.weight.toFixed(2)}）`).join('<br>')
+    : '（无）';
+  // 发言流：当日 30 人，重绘
+  $('#sbx-feed').innerHTML = d.round.outputs.map((o) => {
+    const cls = o.targetPct > 50 ? 'green' : o.targetPct < 50 ? 'red' : 'dim';
+    return `<div class="item"><span class="${cls}">●</span> <strong>${esc(personaName(o.personaId))}</strong>（目标 ${o.targetPct}%，信心 ${o.confidence}/5）：${esc(o.reason)}</div>`;
+  }).join('') || '<span class="dim">（本轮无人参战）</span>';
+}
+$('#sbx-play').addEventListener('click', () => {
+  if (sbxTimer) { stopPlay(); return; }
+  $('#sbx-play').textContent = '⏸ 暂停';
+  sbxTimer = setInterval(() => {
+    if (sbxIdx >= SBX.days.length - 1) { stopPlay(); return; }
+    sbxIdx += 1; renderSbxDay();
+  }, 1200);
+});
+$('#sbx-step').addEventListener('click', () => { stopPlay(); if (SBX && sbxIdx < SBX.days.length - 1) { sbxIdx += 1; renderSbxDay(); } });
+$('#sbx-slider').addEventListener('input', (e) => { stopPlay(); sbxIdx = Number(e.target.value); renderSbxDay(); });
+$('#sbx-sel').addEventListener('change', (e) => loadSandbox(e.target.value).catch(showErr));
+
+// ---------- 军团与设置 ----------
+async function loadPool() {
+  const states = await api('/api/states').catch(() => []);
+  const byId = new Map((states || []).map((s) => [s.personaId, s]));
+  let html = '';
+  for (const p of POOL || []) {
+    const st = byId.get(p.id);
+    html += `<div class="pcard" data-id="${esc(p.id)}"><div class="nm">${esc(p.name)}</div>` +
+      `<div class="meta">${esc(p.style)}｜档 ${p.capitalTier}</div>` +
+      `<div class="meta">仓位 ${st ? st.exposurePct.toFixed(0) : '?'}%｜情绪 ${st ? st.emotion.toFixed(0) : '?'}</div></div>`;
+  }
+  html += `<div class="pcard" data-id="__chief"><div class="nm">📰 总编</div><div class="meta">第 31 个角色</div><div class="meta">每日生态观察（#30）</div></div>`;
+  $('#pool-grid').innerHTML = html;
+  document.querySelectorAll('#pool-grid .pcard').forEach((el) =>
+    el.addEventListener('click', () => openCard(el.dataset.id, byId)));
+}
+function openCard(id, byId) {
+  const p = (POOL || []).find((x) => x.id === id);
+  const inner = $('#modal-inner');
+  if (!p) {
+    inner.innerHTML = `<h3>📰 总编</h3><p class="dim">第 31 个角色：每日跑完自动产出《今日散户生态观察》（map-reduce 消化 30 人发言，#30）。日报见预测页。</p><p style="margin-top:10px"><button class="act" onclick="document.getElementById('modal').classList.remove('on')">关闭</button></p>`;
+  } else {
+    const st = byId.get(id);
+    inner.innerHTML =
+      `<h3>${esc(p.name)} <span class="dim">(${esc(p.id)})</span></h3>` +
+      `<p class="kv">风格 ${esc(p.style)}｜资金档 ${p.capitalTier}｜立场 ${esc(p.stance)}｜情绪稳定性 ${p.stability}｜基线 ${p.baseline}` +
+      `${p.biases.length ? '｜偏差 ' + p.biases.map((b) => ({ loss_aversion: '损失厌恶', breakeven: '回本执念', chasing: '追涨', anchoring: '锚定成本' }[b] || b).join('/')) : ''}` +
+      `${p.maxLossPct !== null ? `｜<span class="amber">纪律：亏损超 ${p.maxLossPct}% 无条件减仓</span>` : ''}</p>` +
+      `<p class="kv">当前仓位 ${st ? st.exposurePct.toFixed(0) + '%' : '?'}｜情绪 ${st ? st.emotion.toFixed(0) : '?'}｜成本 ${st && st.costBasis !== null ? st.costBasis.toFixed(0) : '空仓'}</p>` +
+      `<h3 style="margin-top:12px">性格漂移曲线（目标仓位 / 置信度滚动序列，#52）</h3>${svgDrift(st ? st.memory : [])}` +
+      `<h3 style="margin-top:12px">操作复盘（沙盘/预测操作史，不称胜率——#31 分口径）</h3>` +
+      ((st && st.memory.length) ? `<table><tr><th>日</th><th>动作</th><th>目标</th><th>信心</th><th>已实现</th><th>理由</th></tr>` +
+        st.memory.slice().reverse().map((m) => `<tr><td>${esc(m.day)}</td><td>${esc(m.action)}</td><td>${m.targetPct}%</td><td>${m.confidence}</td>` +
+        `<td>${m.realizedPnlPct === null ? '—' : m.realizedPnlPct.toFixed(2) + '%'}</td><td>${esc(m.reason)}</td></tr>`).join('') + '</table>'
+        : '<p class="dim">（暂无操作记忆）</p>');
+  }
+  $('#modal').classList.add('on');
+}
+$('#modal').addEventListener('click', (e) => { if (e.target === $('#modal')) $('#modal').classList.remove('on'); });
+
+async function loadLights() {
+  const dates = await api('/api/runs');
+  let lights = '<span class="light"></span>行情：正常';
+  if (dates.predictions.length) {
+    const r = await api('/api/run/prediction/' + encodeURIComponent(dates.predictions[0]));
+    const degraded = (r.rounds && 0) || 0;
+    lights = (r.report && r.report.participationNote ? '<span class="light warn"></span>本轮有 Agent 缺席；' : '<span class="light"></span>本轮全员参战；');
+    lights += r.days && r.days.length ? '<span class="light"></span>行情新鲜' : '';
+  }
+  $('#src-lights').innerHTML = lights;
+}
+
+function showErr(e) { $('#empty-hint').style.display = 'block'; $('#empty-hint').textContent = '⚠ ' + esc(e.message); }
+$('#pred-sel').addEventListener('change', (e) => loadPrediction(e.target.value).catch(showErr));
+
+// ---------- 当前生效设置 + 成本预估（按 /api/config 实算，F14/F15） ----------
+async function loadCfg() {
+  const cfg = await api('/api/config').catch(() => null);
+  if (!cfg) return;
+  const k = Math.max(1, Number(cfg.sandboxK) || 1);
+  // 预测 = 30 Agent ×（第 1 日 K=5 + 第 2–5 日 K=1×4）+ 总编 1；沙盘 = 30 × K × 天数 + 总编 1（总编按运行计，不按天摊）
+  $('#cost-estimate').textContent =
+    `成本预估：预测一次 ≈ ${30 * 9 + 1} 次 LLM 调用（30 Agent × [K5+K1×4] + 总编 1）；` +
+    `沙盘 ≈ ${30 * k} 次/日 × 天数（30 Agent × K=${k}）+ 总编 1 次/运行。` +
+    `冲击系数 k=${cfg.impactK ?? 0.8}（一期未校准，#21；校准依赖二期对账数据）。`;
+  const emo = cfg.emotion || {};
+  const rows = [
+    ['标的指数', cfg.index === 'CSI300' ? '沪深300' : '上证指数'],
+    ['模型 ID', cfg.modelId || '（宿主默认）'],
+    ['游资放大系数', `×${cfg.hotMoneyAmp}`],
+    ['事件卡衰减', `${cfg.eventDecayDays} 天`],
+    ['沙盘每日采样轮数 K', k],
+    ['人设池随机种子', cfg.seed],
+    ['情绪权重（事件/盈亏/大盘）', `${emo.eventWeight ?? '?'} / ${emo.pnlWeight ?? '?'} / ${emo.marketWeight ?? '?'}`],
+  ];
+  $('#cfg-list').innerHTML = rows.map(([a, b]) => `<div>· ${esc(String(a))}：<strong>${esc(String(b))}</strong></div>`).join('');
+}
+loadCfg();
+loadRuns();
+</script>
+</body>
+</html>

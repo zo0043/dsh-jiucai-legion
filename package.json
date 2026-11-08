@@ -1,0 +1,66 @@
+{
+  "name": "dsh-jiucai-legion",
+  "version": "0.1.0",
+  "description": "韭菜军团 —— DSH 插件：A股散户群体博弈模拟，输出上证指数次日/5日涨跌分布（模拟沙盘，非投资建议）",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json",
+    "./client": "./dist/client.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
+    "build:client": "node scripts/build-client.mjs",
+    "test": "vitest run",
+    "cli": "tsx src/cli.ts"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "simulation",
+    "agent",
+    "a-share",
+    "stock-market"
+  ],
+  "license": "MIT",
+  "author": "zo0043",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zo0043/dsh-jiucai-legion.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zo0043/dsh-jiucai-legion/issues"
+  },
+  "homepage": "https://github.com/zo0043/dsh-jiucai-legion#readme",
+  "files": [
+    "dist/",
+    "static/",
+    "python/",
+    "cordis.patch.yml",
+    "docs/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^3.2.7"
+  }
+}

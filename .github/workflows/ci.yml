@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    name: 构建与引擎测试（Node 24）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: 插件入口可加载
+        run: node -e "import('./dist/index.js').then(m => { if (typeof m.apply !== 'function') process.exit(1); })"
+      - run: npx vitest run
+
+  python:
+    name: 数据子进程测试（Python 3.12）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装数据依赖
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r python/requirements.txt
+      - name: pytest（fixture 驱动，零网络）
+        run: .venv/bin/python -m pytest python/tests -q

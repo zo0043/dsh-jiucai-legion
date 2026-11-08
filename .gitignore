@@ -1,0 +1,16 @@
+# dependencies / build
+node_modules/
+dist/
+
+# runtime data（军团状态/对账账本/缓存——含本机路径与个人数据，不入库）
+data/
+
+# python venv
+.venv/
+__pycache__/
+*.pyc
+
+# 本机工具链产物（工作流草稿/日志/系统文件）
+.zcode/
+*.log
+.DS_Store

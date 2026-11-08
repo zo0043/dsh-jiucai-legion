@@ -1,0 +1,7 @@
+# 韭菜军团 bundle：把本插件挂载进 DSH 的 Cordis 上下文树（需求 #1）。
+# 插件入口 dist/index.js 导出 name + apply(ctx)；apply 内做宿主服务防御性探测
+# （src/host/dsh-adapter.ts）——宿主缺某服务时插件不崩，Plan B
+# （斜杠命令 Markdown 日报 + 静态 HTML，#8）保持可用。
+- insert:
+    - id: jiucai-legion
+      name: 'dsh-jiucai-legion'
