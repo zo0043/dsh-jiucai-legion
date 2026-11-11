@@ -419,3 +419,103 @@ describe('buildUserMessage 洗牌与组装（#39/P1）', () => {
     expect(orders.size).toBeLessThanOrEqual(6); // 3! 全排列上限
   });
 });
+
+// ---------- v1.4 #62：公共块「机构动向」行 + 封闭面零泄漏 ----------
+import { buildInstLine } from '../src/engine/info-set.js';
+import type { InstitutionFlow, InstPathFlow } from '../src/engine/types.js';
+
+function mkInstPath(pathId: InstPathFlow['pathId'], netFlowYi: number | null, signals: Record<string, unknown> = {}, asOf: string | null = '2026-11-10'): InstPathFlow {
+  return { pathId, label: pathId, netFlowYi, signals, asOf, note: null };
+}
+function mkInst(): InstitutionFlow {
+  return {
+    asOf: '2026-11-11',
+    netFlowYi: 12.0,
+    paths: [
+      mkInstPath('margin', 12.0, { sseAsOf: '2026-11-10', maintenanceRatio: 260.88, maintenanceAsOf: '2026-11-10' }),
+      mkInstPath('etfSse', -14.96, { bondYi: -23.51, moneyYi: null, otherYi: 2.65, crossBorderYi: 4.09 }, '2026-11-11'),
+      mkInstPath('eventSeat', -1.3, { lhbYi: -2.5, dzjyYi: 1.2, lhbAsOf: '2026-11-11', dzjyAsOf: '2026-11-11' }, '2026-11-11'),
+      mkInstPath('quarterlyStructure', null, { fundHoldCount: { asOf: '2026-09-30', increaseCount: 390, decreaseCount: 3467 }, hkscHolding: { asOf: '2026-09-30', totalStocks: 3040 } }, '2026-09-30'),
+      mkInstPath('northbound', null, { southboundNetYi: 45.72, southboundAsOf: '2026-11-11' }, '2026-11-11'),
+    ],
+    degraded: [],
+  };
+}
+
+describe('公共块「机构动向」行（v1.4 #62，零 LLM 模板）', () => {
+  it('margin +12.0 → 「两融净流入 +12.0 亿（截至 2026-11-10，T+1）」；维持担保比例进文案', () => {
+    const block = buildCommonBlock(makeSnapshot({ inst: mkInst() }));
+    expect(block).toContain('两融净流入 +12.0 亿（截至 2026-11-10，T+1）');
+    expect(block).toContain('平均维持担保比例 260.9');
+    expect(block).toContain('安全垫参考，不计入净流');
+  });
+  it('bondYi −23.51 只进旁注并明示「不计入净流口径」，不与 A 股净额相加展示', () => {
+    const block = buildCommonBlock(makeSnapshot({ inst: mkInst() }));
+    expect(block).toContain('债券 ETF 申赎 -23.5 亿');
+    expect(block).toContain('均不计入净流口径（signals 分桶）');
+    expect(block).toContain('沪市 A股ETF 净申购 -15.0 亿（深市份额不可观测）');
+    // 相加值 -15.0 + (-23.5) = -38.5 不得出现
+    expect(block).not.toContain('-38.5');
+  });
+  it('事件席位子句点名数据源（龙虎榜/大宗）与 T+0 盘后；季频子句带报告期滞后标注', () => {
+    const block = buildCommonBlock(makeSnapshot({ inst: mkInst() }));
+    expect(block).toContain('龙虎榜机构席位净买 -2.5 亿');
+    expect(block).toContain('大宗「机构专用」净买 +1.2 亿');
+    expect(block).toContain('T+0 盘后');
+    expect(block).toContain('公募基金季报增持 390 家/减持 3467 家（报告期 2026-09-30，滞后披露）');
+    expect(block).toContain('香港中央结算（北向季度代理）持有 3040 只（报告期 2026-09-30，滞后 30–40 天）');
+  });
+  it('北向 null → 未披露（上游 2024-08 起停报）；南向只出现在「资金分流，非北向」子句', () => {
+    const block = buildCommonBlock(makeSnapshot({ inst: mkInst() }));
+    expect(block).toContain('北向每日净买：未披露（上游 2024-08 起停报）');
+    expect(block).toContain('南向（资金分流，非北向）+45.7 亿');
+  });
+  it('行在资金面行之后、新闻要点之前；不新增洗牌块（buildUserMessage 块序不变）', () => {
+    const snap = makeSnapshot({ inst: mkInst() });
+    const block = buildCommonBlock(snap);
+    const fundsIdx = block.indexOf('资金面：');
+    const instIdx = block.indexOf('机构动向：');
+    const newsIdx = block.indexOf('新闻要点：');
+    expect(instIdx).toBeGreaterThan(fundsIdx);
+    expect(instIdx).toBeLessThan(newsIdx);
+  });
+  it('inst 缺省（旧缓存快照）→ 整行省略（#64 additive 自愈）', () => {
+    expect(buildCommonBlock(makeSnapshot())).not.toContain('机构动向：');
+  });
+  it('全源 null → 整行兜底文案「今日无可用机构数据」', () => {
+    const allNull = mkInst();
+    for (const p of allNull.paths) {
+      p.netFlowYi = null;
+      p.signals = p.pathId === 'northbound' ? { southboundNetYi: null } : {};
+    }
+    expect(buildInstLine(allNull)).toBe('机构动向：今日无可用机构数据（各源降级，如实标注）');
+  });
+  it('机构行与 whaleRumor 解耦：机构行无「大资金/主力」模糊身份词（#14 边界）', () => {
+    const line = buildInstLine(mkInst()) ?? '';
+    expect(line).not.toContain('大资金');
+    expect(line).not.toContain('主力');
+  });
+
+  // 封闭面（#62）：机构内容只进公共块，情绪/个人/气候块零泄漏
+  it('封闭面：buildPersonalBlock / buildLegionClimateBlock 不含机构内容（负证据断言）', () => {
+    const persona = makePersona();
+    const state: AgentState = { personaId: persona.id, cash: 100000, exposurePct: 10, costBasis: 3200, emotion: 60, memory: [] };
+    const personal = buildPersonalBlock(state, persona, 3245, 0.01);
+    for (const kw of ['机构', '两融净流入', 'A股ETF', '龙虎榜', '大宗', '维持担保']) {
+      expect(personal).not.toContain(kw);
+    }
+    const climate = buildLegionClimateBlock(
+      { asOf: '2026-10-24', overall: { bullPct: 0.6, bearPct: 0.2, neutralPct: 0.2, count: 30 }, byStyle: {} },
+      { style: persona.style, bars: makeBars(), seed: 7, mirror: { weightedBullPct: 0.6, weightedBearPct: 0.2, whaleRumor: '做多' } },
+    );
+    for (const kw of ['机构', '两融', 'ETF', '龙虎榜', '大宗']) {
+      expect(climate).not.toContain(kw);
+    }
+  });
+  it('buildUserMessage 含机构动向行（经由公共块），风格/个人块结构不变', () => {
+    const persona = makePersona();
+    const state: AgentState = { personaId: persona.id, cash: 100000, exposurePct: 10, costBasis: null, emotion: 60, memory: [] };
+    const msg = buildUserMessage({ snapshot: makeSnapshot({ inst: mkInst() }), state, persona, seed: 42 });
+    expect(msg).toContain('机构动向：');
+  });
+});

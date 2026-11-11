@@ -50,6 +50,10 @@ async function askAgent(
  * 跑一轮：30 Agent 并发采样（#54）。
  * 失败重试 cfg.agentRetries 次；重试后仍失败记 missing；
  * 参战人数 < cfg.quorumFloor → 抛 QuorumError（整轮作废）。
+ *
+ * instNF（v1.4 #60）：机构折算净流常数（NF 单位，由调用方经 institutionNetFlow 现算
+ * 传入，缺省 0）——nf = 散户净流 + instNF；冲击映射分母保持散户权重和不变（#21 语义）。
+ * RoundResult 同时落 retailNetFlow/retailDirection（#61 纯散户口径，additive）。
  */
 export async function runRound(ctx: {
   ports: HostPorts;
@@ -59,6 +63,8 @@ export async function runRound(ctx: {
   snapshot: MarketSnapshot;
   round: number;
   seed: number;
+  /** 机构折算净流（#60 确定性常数，缺省 0 = 旧口径逐点等价） */
+  instNF?: number;
 }): Promise<RoundResult> {
   const { ports, cfg, personas, states, snapshot, round, seed } = ctx;
   const outputs: AgentOutput[] = [];
@@ -93,10 +99,17 @@ export async function runRound(ctx: {
   const participants = outputs.length;
   if (participants < cfg.quorumFloor) throw new QuorumError(participants, cfg.quorumFloor);
 
-  const nf = netFlowOfRound(outputs, states, new Map(personas.map((p) => [p.id, p])), cfg);
+  const instNF = typeof ctx.instNF === 'number' && Number.isFinite(ctx.instNF) ? ctx.instNF : 0;
+  const retailNF = netFlowOfRound(outputs, states, new Map(personas.map((p) => [p.id, p])), cfg);
+  const nf = retailNF + instNF;
   const direction = directionOf(nf);
+  // 冲击映射分母 = 散户权重和（#21/#60：机构流经折算进分子，不扩分母）
   const offsetPct = computeOffsetPct(nf, totalWeight(personas, cfg), snapshot.volatility20, cfg.impactK);
-  return { round, outputs, missing, participants, netFlow: nf, direction, offsetPct };
+  return {
+    round, outputs, missing, participants,
+    netFlow: nf, direction, offsetPct,
+    retailNetFlow: retailNF, retailDirection: directionOf(retailNF), // #61 纯散户口径（additive）
+  };
 }
 
 /**

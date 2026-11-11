@@ -12,6 +12,7 @@ import { median, buildLegionClimate, topWeightShare } from './aggregate.js';
 import { buildCamps, buildLegionMirror, campDispersion, dispersionNote, generateReport } from './editor.js';
 import { applyOffset } from './impact.js';
 import { cardContributions, activeEvents } from './event-card.js';
+import { institutionNetFlow, instNarrativeLine } from './institutions.js';
 import { tradeDayFrom, computeVol20 } from './dates.js';
 
 export interface SandboxDeps {
@@ -101,10 +102,14 @@ export async function runSandbox(deps: SandboxDeps): Promise<SandboxRunOutcome> 
     // K=1 时该轮即当日、无分布可剔除，QuorumError 上抛按「全作废」处理。
     const k = Math.max(1, cfg.sandboxK);
     const rounds: import('./types.js').RoundResult[] = [];
+    // 机构净流常数（#60/#41）：daySnapshot 经 spread 原样透传 day-0 冻结载荷 inst——
+    // 不随外生衰减折减、不重算（与 funds 冻结同构），每日折算得同一常数
+    const instNF = institutionNetFlow(daySnapshot.inst, cfg).netFlow;
     for (let r = 1; r <= k; r += 1) {
       try {
         rounds.push(await runRound({
           ports, cfg, personas: pool, states, snapshot: daySnapshot, round: r, seed: deps.seed + i * 100 + r,
+          instNF,
         }));
       } catch (e) {
         if (!(e instanceof QuorumError)) throw e;
@@ -148,6 +153,7 @@ export async function runSandbox(deps: SandboxDeps): Promise<SandboxRunOutcome> 
       legionBullPct,
       activeEvents: activeEvents(simCards, tradeDate),
       round,
+      instNF, // #60/#41：锚定日冻结值折算的常数（面板标注「锚定日冻结值」）
     });
     // 快照滚动：bars 追加推演 bar（供次日 computeVol20 与 K 线块）
     snap = { ...snap, bars: [...snap.bars, { date: tradeDate, open: close, high: close, low: close, close, volume: 0 }] };
@@ -178,6 +184,8 @@ export async function runSandbox(deps: SandboxDeps): Promise<SandboxRunOutcome> 
     degradedFlags: [],
     sandboxNote: `⚠ 沙盘推演：外生数据冻结于 ${startDate} 并逐日衰减，第 1 日后全部为内生演化（#41），不构成对真实市场的预测。`,
     topWhaleShare: lastDay ? topWeightShare(lastDay.round.outputs, personaMap, cfg, 5) : null, // P5 资金镜像行
+    // 机构动向叙事行（#64）：沙盘取 day-0 冻结载荷（#41 同构）
+    instLine: instNarrativeLine(deps.snapshot.inst),
   });
 
   return {
@@ -192,6 +200,7 @@ export async function runSandbox(deps: SandboxDeps): Promise<SandboxRunOutcome> 
       report,
       legionClimate: climate, // P1：末轮气候，供跨运行读取（旧记录缺字段 → null，自愈）
       legionMirror: mirror, // P5：末轮资金镜像，供跨运行读取（旧记录缺字段 → null，自愈）
+      inst: deps.snapshot.inst ?? null, // #60/#41：day-0 机构载荷原样冻结落盘
     },
     finalStates: states,
   };

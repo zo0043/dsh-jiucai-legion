@@ -251,3 +251,57 @@ describe('campDispersion 当日阵营分歧（P5，sandbox 分歧话术实测化
     expect(campDispersion(buildCamps([], new Map(), new Map(), cfg))).toBe(0);
   });
 });
+
+// ---------- v1.4 #64：总编日报「机构动向」叙事行（prompt + 兜底模板同步） ----------
+describe('generateReport 机构动向行（#64）', () => {
+  it('instLine 拼进 prompt「资金镜像」行之后；LLM 失败 → 兜底模板必含机构行（#28 永不缺席）', async () => {
+    const llm = new MockLlm();
+    llm.enqueue('机构今天也很忙。');
+    const ports = { llm, proc: { spawn: (): never => { throw new Error('不触达'); } }, ui: new MockUi(), clock: new MockClock() };
+    const report = await generateReport(ports, {
+      dayLabel: '2026-11-12', camps: [], dispersionText: 'x', participationNote: null,
+      multiBullPct: 0, degradedFlags: [],
+      topWhaleShare: 0.1,
+      instLine: '机构动向：两融 +12.0 亿、A股ETF -15.0 亿（折算系数未校准，#60）',
+    });
+    const prompt = llm.calls[0]!.req.messages[0]!.content;
+    const mirrorIdx = prompt.indexOf('资金镜像');
+    const instIdx = prompt.indexOf('机构动向：');
+    expect(instIdx).toBeGreaterThan(mirrorIdx); // 紧跟资金镜像行之后
+    expect(prompt).toContain('两融 +12.0 亿');
+    expect(report.markdown).toContain('不构成任何投资建议');
+  });
+
+  it('LLM 抛错 → fallbackReport 输出必含「机构动向」行（#64 兜底同步）', async () => {
+    const llm = new MockLlm();
+    llm.setFallback(() => { throw new Error('LLM 挂了'); });
+    const ports = { llm, proc: { spawn: (): never => { throw new Error('不触达'); } }, ui: new MockUi(), clock: new MockClock() };
+    const report = await generateReport(ports, {
+      dayLabel: '2026-11-12', camps: [], dispersionText: 'x', participationNote: null,
+      multiBullPct: 0, degradedFlags: [],
+      instLine: '机构动向：两融 +12.0 亿（折算系数未校准，#60）',
+    });
+    expect(report.markdown).toContain('机构动向：两融 +12.0 亿');
+  });
+
+  it('instLine 缺省 → prompt 与兜底模板均不含机构行（向后兼容）', async () => {
+    const llm = new MockLlm();
+    llm.enqueue('正常叙事。');
+    const ports = { llm, proc: { spawn: (): never => { throw new Error('不触达'); } }, ui: new MockUi(), clock: new MockClock() };
+    const report = await generateReport(ports, {
+      dayLabel: 'd', camps: [], dispersionText: 'x', participationNote: null,
+      multiBullPct: 0, degradedFlags: [],
+    });
+    expect(llm.calls[0]!.req.messages[0]!.content).not.toContain('机构动向');
+    expect(report.markdown).not.toContain('机构动向');
+    // 兜底路径同样不含：LLM 失败 + 无 instLine
+    const llm2 = new MockLlm();
+    llm2.setFallback(() => { throw new Error('LLM 挂了'); });
+    const ports2 = { llm: llm2, proc: ports.proc, ui: ports.ui, clock: ports.clock };
+    const report2 = await generateReport(ports2, {
+      dayLabel: 'd', camps: [], dispersionText: 'x', participationNote: null,
+      multiBullPct: 0, degradedFlags: [],
+    });
+    expect(report2.markdown).not.toContain('机构动向');
+  });
+});

@@ -115,6 +115,14 @@ export interface NewsItem {
 export interface FundsInfo {
   marginBalance: number | null;
   northboundNet: number | null;
+  /**
+   * 南向资金（港股通(沪)+港股通(深) 合计，亿元，#59）：只作「资金分流」signals，
+   * 任何字段、任何文案不得充当北向代理；与北向共用同一次 summary_em 响应（零重复出网）。
+   * 旧快照缺失 → undefined。
+   */
+  southboundNetYi?: number | null;
+  /** 南向数据实际交易日；旧快照缺失 → undefined */
+  southboundAsOf?: string | null;
   /** 资金面块整体数据截至（两融/北向中较新者，测试口径锁定） */
   asOf: string;
   /** 两融余额实际交易日（T+1 披露，#47）；旧快照缺失 → undefined */
@@ -128,6 +136,40 @@ export interface DataSourceFlag {
   asOf: string;
   degraded: boolean;
   note?: string;
+}
+
+// ---------- 机构决策层（v1.4 #58–#64） ----------
+
+/** 机构五路径 pathId（宪法 #58 定死） */
+export type InstPathId = 'margin' | 'etfSse' | 'eventSeat' | 'quarterlyStructure' | 'northbound';
+
+/** 单条机构路径载荷（python institution.py 原始透传；金额单位=亿元） */
+export interface InstPathFlow {
+  pathId: InstPathId;
+  label: string;
+  /**
+   * 该路径日频净流（亿元）。日频流量路径 margin/etfSse/eventSeat 有值；
+   * quarterlyStructure（季频只产结构信号）与 northbound（2024-08 起停披露，#59）恒 null。
+   * A 股口径过滤（M2 仅 A 股股票型）由 python 侧产出，TS 不做二次资产过滤（#60）。
+   */
+  netFlowYi: number | null;
+  /** 路径内子信号（分桶金额/维持担保比例/季频结构等），结构按 python 侧 institution.py */
+  signals: Record<string, unknown>;
+  /** 该路径数据实际截至日（YYYY-MM-DD）；不可得 → null */
+  asOf: string | null;
+  note?: string | null;
+}
+
+/**
+ * 机构决策层载荷（python get_institution 原始五路径，随 getSnapshot 全载荷透传）。
+ * 顶层 netFlowYi 定义（#60）：信息性 Σ(日频流量路径亿元、未折算)，仅展示、非 NF——
+ * 折算只发生在 TS 侧 institutionNetFlow（经 cfg.instLayer.nfScale）。
+ */
+export interface InstitutionFlow {
+  asOf: string;
+  netFlowYi: number | null;
+  paths: InstPathFlow[];
+  degraded?: DataSourceFlag[];
 }
 
 /**
@@ -191,6 +233,12 @@ export interface MarketSnapshot {
   legionClimate?: LegionClimate | null;
   /** 军团资金镜像（P5）：与气候同路径注入/滚动；缺省 → 双轨行与传闻行省略 */
   legionMirror?: LegionMirror | null;
+  /**
+   * 机构决策层五路径原始载荷（v1.4 #58–#60）：python 侧随 getSnapshot 透传。
+   * 旧缓存快照缺省（undefined/null）→ 机构层视为不可用（institutionNetFlow 返回 0，
+   * 与 enabled=false 同款，#64 向后兼容自愈）。
+   */
+  inst?: InstitutionFlow | null;
   degraded: DataSourceFlag[];
 }
 
@@ -211,9 +259,18 @@ export interface RoundResult {
   missing: string[];
   /** 有效参与人数（outputs.length） */
   participants: number;
+  /** 合成后净流 = 散户净流 + instNF（#60；instNF 恒 0 时与散户净流相等） */
   netFlow: number;
   direction: -1 | 0 | 1;
   offsetPct: number;
+  /**
+   * 纯散户净流（v1.4 #61 additive）：dispersionOf/isDispersionNarrow 与日报分歧话术
+   * 一律读本字段——机构层是全体轮共加的常数，不得间接改写「分歧过窄」告警频度与
+   * 军团内部分歧语义。旧落盘记录缺字段 → undefined → 消费方回退 netFlow。
+   */
+  retailNetFlow?: number;
+  /** 纯散户方向 = directionOf(retailNetFlow)（#61 additive；旧记录缺省回退 direction） */
+  retailDirection?: -1 | 0 | 1;
 }
 
 export interface EventCard {
@@ -297,6 +354,17 @@ export interface PredictionResult {
   legionClimate?: LegionClimate | null;
   /** 军团资金镜像（P5）：锚定日中位轮口径，跨运行注入同 legionClimate（旧记录缺失 → null） */
   legionMirror?: LegionMirror | null;
+  /**
+   * 机构决策层锚定日原始载荷（v1.4 #60：python 五路径透传落盘，供面板机构卡与跨运行）；
+   * 旧落盘记录缺字段 → undefined → 面板渲染「机构层：不可用（旧记录）」（#64 自愈）。
+   */
+  inst?: InstitutionFlow | null;
+  /**
+   * 命中口径断代（v1.4 #61）：'retail' = 纯散户口径（旧记录缺省回退），'retail+inst' =
+   * 含机构折算净流。由 predict.ts 按**当时** cfg.instLayer.enabled 写入；对账三消费点
+   * （reconcileSummary / CLI 横幅 / 面板横幅）按本字段分列、不混算。
+   */
+  flowScope?: 'retail' | 'retail+inst';
   /** mock 运行标记（F21）：脚本化 LLM 产生的结果，面板显示徽章、对账不计入命中率 */
   mock?: boolean;
 }
@@ -310,6 +378,11 @@ export interface SandboxDay {
   legionBullPct: number;
   activeEvents: { id: string; text: string; weight: number }[];
   round: RoundResult;
+  /**
+   * 当日机构净流常数（v1.4 #60/#41：取锚定日冻结载荷折算，不衰减不重算）；
+   * 旧落盘记录缺字段 → undefined → 渲染省略。
+   */
+  instNF?: number | null;
 }
 
 export interface SandboxResult {
@@ -326,6 +399,8 @@ export interface SandboxResult {
   legionClimate?: LegionClimate | null;
   /** 军团资金镜像（P5）：末轮口径，供跨运行读取；旧落盘记录缺失 → 视为 null（#28 向后兼容） */
   legionMirror?: LegionMirror | null;
+  /** 机构决策层 day-0 冻结载荷（v1.4 #60/#41：锚定日原样落盘，不衰减不重算；旧记录缺省） */
+  inst?: InstitutionFlow | null;
   /** mock 运行标记（F21）：脚本化 LLM 产生的结果，面板显示徽章、对账不计入命中率 */
   mock?: boolean;
 }
@@ -341,6 +416,11 @@ export interface ReconcileRecord {
   /** hit | miss | tie（平局剔除分母，#44） */
   outcome: 'hit' | 'miss' | 'tie' | null;
   settledAt: string | null;
+  /**
+   * 命中口径断代（v1.4 #61）：由 recordsFromPrediction 从 PredictionResult.flowScope 读取；
+   * 旧落盘记录缺字段 → undefined → 统计侧视为 'retail'（分列不混算）。
+   */
+  flowScope?: 'retail' | 'retail+inst';
   /** mock 运行产生（F21）：true = 脚本化演示数据，不计入命中率统计 */
   mock?: boolean;
 }
@@ -366,6 +446,17 @@ export interface EngineConfig {
   eventDecayDays: number;
   /** 冲击系数（#21 一期未校准默认 0.8） */
   impactK: number;
+  /**
+   * 机构决策层（v1.4 #58–#60）：enabled=false 时逐点等价旧口径（回退锚）。
+   * nfScale 为未校准折算系数（亿元→NF 单位，默认 0.1），沿用 #21 先例在预测输出与
+   * 面板明示（INST_UNCALIBRATED_NOTE），禁止静默调参。
+   * paths 为三条日频流量路径的独立开关（关掉的路径不参与折算，#63 配置键）。
+   */
+  instLayer: {
+    enabled: boolean;
+    nfScale: number;
+    paths: { margin: boolean; etf: boolean; event: boolean };
+  };
   /**
    * 集中度传闻阈值（P5，%）：领先阵营内最大单一权重占该阵营权重和的比例超过此值 →
    * 信息集公共块追加模板传闻「盘面风闻有大资金在做多/做空」（#14：无身份无具体操作）。
@@ -405,6 +496,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
   sandboxK: 1,
   eventDecayDays: 2,
   impactK: 0.8,
+  instLayer: { enabled: true, nfScale: 0.1, paths: { margin: true, etf: true, event: true } },
   whaleRumorThresholdPct: 40,
   tieThresholdPct: 0.1,
   emotion: { eventWeight: 4, pnlWeight: 6, marketWeight: 400, carryover: 0.6, negativeAsym: 1.3 },

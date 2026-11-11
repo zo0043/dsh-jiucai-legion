@@ -16,6 +16,7 @@ SNAPSHOT_KEYS = {
     "sentiment",
     "news",
     "funds",
+    "inst",
     "volatility20",
     "legionBullPct",
     "degraded",
@@ -84,17 +85,29 @@ def _stub_all(monkeypatch: pytest.MonkeyPatch, bars: list[dict[str, Any]]) -> di
     funds = {
         "marginBalance": 10200.0,
         "northboundNet": 50.0,
+        "southboundNetYi": 45.72,
         "asOf": "2026-11-05",
         "marginAsOf": "2026-11-05",
         "northAsOf": "2026-11-04",
+        "southboundAsOf": "2026-11-04",
         "degraded": [{"source": "funds-test", "asOf": None, "degraded": True, "note": "资金测试降级"}],
+    }
+    inst = {
+        "asOf": "2026-11-05",
+        "netFlowYi": 132.304,
+        "paths": [{"pathId": "margin", "label": "M1 杠杆资金（两融）", "netFlowYi": 132.304, "signals": {}, "asOf": "2026-11-05"}],
+        "degraded": [{"source": "inst-test", "asOf": None, "degraded": True, "note": "机构测试降级"}],
     }
     monkeypatch.setattr(snapshot_mod, "get_daily_bars", lambda index, days=250: daily)
     monkeypatch.setattr(snapshot_mod, "get_breadth", lambda date=None: breadth)
     monkeypatch.setattr(snapshot_mod, "get_sentiment", lambda: sentiment)
     monkeypatch.setattr(snapshot_mod, "get_news", lambda: news)
     monkeypatch.setattr(snapshot_mod, "get_funds", lambda index: funds)
-    return {"daily": daily, "breadth": breadth, "sentiment": sentiment, "news": news, "funds": funds}
+    monkeypatch.setattr(snapshot_mod, "get_institution", lambda funds=None: inst)
+    return {
+        "daily": daily, "breadth": breadth, "sentiment": sentiment,
+        "news": news, "funds": funds, "inst": inst,
+    }
 
 
 class TestSnapshotAggregation:
@@ -130,10 +143,15 @@ class TestSnapshotAggregation:
         assert snap["funds"] == {
         "marginBalance": 10200.0,
         "northboundNet": 50.0,
+        "southboundNetYi": 45.72,
         "asOf": "2026-11-05",
         "marginAsOf": "2026-11-05",
         "northAsOf": "2026-11-04",
+        "southboundAsOf": "2026-11-04",
     }
+        # 机构决策层原始载荷随快照透传（v1.4 #58–#60；折算只在 TS 侧）
+        assert snap["inst"]["netFlowYi"] == 132.304
+        assert snap["inst"]["paths"][0]["pathId"] == "margin"
         assert snap["legionBullPct"] is None  # 由 TS 引擎回流计算
         assert snap["volatility20"] is not None
 
@@ -146,7 +164,7 @@ class TestSnapshotAggregation:
         _stub_all(monkeypatch, bars)
         snap = get_snapshot("SH000001")
         sources = [d["source"] for d in snap["degraded"]]
-        for expected in ("daily-test", "breadth-test", "sentiment-test", "news-test", "funds-test"):
+        for expected in ("daily-test", "breadth-test", "sentiment-test", "news-test", "funds-test", "inst-test"):
             assert expected in sources
 
     def test_volatility20_insufficient_bars_adds_degraded(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -155,6 +173,44 @@ class TestSnapshotAggregation:
         snap = get_snapshot("SH000001")
         assert snap["volatility20"] is None
         assert any(d["source"] == "volatility20" for d in snap["degraded"])
+
+    def test_old_cache_without_inst_is_regenerated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """v1.4 自愈（#64 additive）：升级前缓存的同交易日快照无 inst 块 → 重算而非直接复用。"""
+        from djiucai_data.cache import save_cache
+
+        bars = [
+            {"date": f"2026-10-{d:02d}", "open": 1.0, "high": 2.0, "low": 0.5, "close": 100.0 + d, "volume": 10.0}
+            for d in range(1, 22)
+        ]
+        _stub_all(monkeypatch, bars)
+        # 预置 v1.4 前形态的旧缓存（tradeDate 相同、无 inst 键）
+        save_cache(
+            "snapshot",
+            "SH000001.json",
+            {"index": "SH000001", "tradeDate": "2026-10-21", "bars": bars, "degraded": []},
+        )
+        snap = get_snapshot("SH000001")
+        assert "inst" in snap  # 旧缓存被重算为新形态
+        assert snap["tradeDate"] == "2026-10-21"
+
+    def test_same_day_cache_hit_reuses_inst_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """同交易日且缓存已含 inst → 直接命中（不走子源重拉）。"""
+        from djiucai_data.cache import load_cache, save_cache
+
+        bars = [
+            {"date": f"2026-10-{d:02d}", "open": 1.0, "high": 2.0, "low": 0.5, "close": 100.0 + d, "volume": 10.0}
+            for d in range(1, 22)
+        ]
+        _stub_all(monkeypatch, bars)
+        stub_inst = {"asOf": "2026-10-21", "netFlowYi": 7.0, "paths": [], "degraded": []}
+        save_cache(
+            "snapshot",
+            "SH000001.json",
+            {"index": "SH000001", "tradeDate": "2026-10-21", "bars": bars, "inst": stub_inst, "degraded": []},
+        )
+        snap = get_snapshot("SH000001")
+        assert load_cache("snapshot", "SH000001.json")["tradeDate"] == "2026-10-21"
+        assert snap["inst"]["netFlowYi"] == 7.0  # 缓存命中原样返回
 
     def test_date_anchor_filters_bars(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """指定 date 参数 → 只取 <= date 的 bars 作为锚（#46 盘中锚定最近收盘日）。"""

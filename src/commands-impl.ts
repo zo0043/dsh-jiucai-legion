@@ -12,6 +12,7 @@ import { runPrediction } from './engine/predict.js';
 import { runSandbox } from './engine/sandbox.js';
 import { parseEventCard, recommendScripts } from './engine/event-card.js';
 import { recordsFromPrediction, settleRecords, reconcileSummary, hitRateBanner } from './engine/reconcile.js';
+import { INST_UNCALIBRATED_NOTE } from './engine/institutions.js';
 import { expectedLatestCloseDate } from './engine/dates.js';
 import { SETTING_FIELDS } from './config.js';
 
@@ -108,7 +109,10 @@ export async function cmdPredict(bundle: RuntimeBundle): Promise<{ markdown: str
   const summary = [
     `📊 ${result.anchorDate} 锚定 → 次日 ${result.days[0]?.tradeDate} 收盘估计 ${result.days[0]?.closeEstimate.toFixed(2)}（方向 ${result.days[0]?.direction === 1 ? '看多' : result.days[0]?.direction === -1 ? '看空' : '持平'}）`,
     `📈 5 日路径：${result.days.map((d) => d.closeEstimate.toFixed(0)).join(' → ')}｜${result.report.participationNote ?? '30/30 参战'}`,
-    `📐 冲击系数 k=${cfg.impactK}（一期未校准，#21；校准依赖二期对账数据积累）`,
+    // 机构折算系数未校准文案（#60：与冲击系数同级别的明示；enabled=false → 机构层关闭不再展示）
+    cfg.instLayer?.enabled
+      ? `📐 冲击系数 k=${cfg.impactK}（一期未校准，#21）；机构净流折算系数 nfScale=${cfg.instLayer.nfScale}（未校准，#60）——${INST_UNCALIBRATED_NOTE}`
+      : `📐 冲击系数 k=${cfg.impactK}（一期未校准，#21；校准依赖二期对账数据积累）`,
     result.dispersionNarrow ? '⚠️ 分歧度过窄告警（#39）：K 轮方向完全一致' : '',
     result.coldStartNote ?? '',
   ].filter((s) => s.length > 0).join('\n');
@@ -164,11 +168,21 @@ export async function cmdReconcile(bundle: RuntimeBundle): Promise<string> {
     schemaVersion, savedAt: new Date().toISOString(), payload: all,
   });
   const summary = reconcileSummary(all);
-  return [
-    `1 日命中率：${hitRateBanner(summary.d1)}`,
-    `5 日命中率：${hitRateBanner(summary.d5)}`,
-    DISCLAIMER_SHORT,
-  ].join('\n');
+  // 命中率横幅按 flowScope 分列输出（v1.4 #61：不混算；retail+inst 无记录时省略该行防噪声）
+  const hasInstScope = all.some((r) => (r.flowScope ?? 'retail') === 'retail+inst');
+  const lines = [
+    `1 日命中率：${hitRateBanner(summary.byScope.retail.d1, 'retail')}`,
+    `5 日命中率：${hitRateBanner(summary.byScope.retail.d5, 'retail')}`,
+  ];
+  if (hasInstScope) {
+    lines.splice(
+      1, 0,
+      `1 日命中率：${hitRateBanner(summary.byScope['retail+inst'].d1, 'retail+inst')}`,
+      `5 日命中率：${hitRateBanner(summary.byScope['retail+inst'].d5, 'retail+inst')}`,
+    );
+  }
+  lines.push(DISCLAIMER_SHORT);
+  return lines.join('\n');
 }
 
 /** 最近日报重放（#29 安静日报）；html=true 时同时落盘静态 HTML（#8 Plan B） */

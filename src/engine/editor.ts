@@ -168,6 +168,8 @@ export async function generateReport(
     intradayNote?: string | null;
     /** 前 5 大户权重占参战者权重和的份额（P5 资金镜像行；缺省/无参战 → 行省略） */
     topWhaleShare?: number | null;
+    /** 机构动向叙事行（v1.4 #64：instNarrativeLine 拼装的零 LLM 素材；缺省 → 行省略） */
+    instLine?: string | null;
   },
 ): Promise<EditorReport> {
   const mapSummary = input.camps
@@ -183,11 +185,14 @@ export async function generateReport(
   const mirrorLine = input.topWhaleShare === null || input.topWhaleShare === undefined
     ? ''
     : `资金镜像：多军资金占比 ${(bullShare * 100).toFixed(0)}%，前 5 大户贡献 ${(input.topWhaleShare * 100).toFixed(0)}%（按在场资金）`;
+  // 机构动向行（v1.4 #64）：紧跟资金镜像行之后，零 LLM 素材原样进 prompt 与兜底模板
+  const instNarrative = input.instLine ?? '';
   const flags = input.degradedFlags.length > 0 ? `\n数据降级：${input.degradedFlags.join('；')}` : '';
   const prompt = [
     `你是散户军团的总编。根据以下阵营数据写一篇《今日散户生态观察》（${input.dayLabel}），股吧体、轻松自嘲、但数字要严谨，300 字以内。`,
     `军团看多比例：${(input.multiBullPct * 100).toFixed(0)}%`,
     mirrorLine,
+    instNarrative,
     input.dispersionText,
     input.participationNote ?? '',
     input.sandboxNote ?? '',
@@ -224,6 +229,8 @@ function fallbackReport(input: {
   dispersionText: string;
   participationNote: string | null;
   sandboxNote?: string;
+  /** 机构动向行（v1.4 #64：兜底模板同步包含——#28 日报永不缺席） */
+  instLine?: string | null;
 }): string {
   const lines = [
     `# 今日散户生态观察（${input.dayLabel}）`,
@@ -234,6 +241,7 @@ function fallbackReport(input: {
       const label = c.camp === 'bull' ? '多军' : c.camp === 'bear' ? '空军' : '观望';
       return `- **${label}** ${c.count} 人 ｜ 平均目标仓位 ${c.avgTargetPct.toFixed(1)}% ｜ 平均情绪 ${c.avgEmotion.toFixed(0)}`;
     }),
+    ...(input.instLine ? ['', input.instLine] : []),
     ...(input.participationNote ? ['', input.participationNote] : []),
     ...(input.sandboxNote ? ['', input.sandboxNote] : []),
     '',

@@ -92,8 +92,14 @@ footer { text-align:center; color:var(--dim); font-size:12px; padding:18px; bord
       <h3>总编日报 · 今日散户生态观察（#30）</h3>
       <div class="md" id="pred-report"></div>
     </div>
+    <div class="card" id="inst-card">
+      <h3>机构决策层（v1.4 #58–#60；数据源=锚定日原始载荷，折算只在引擎内）</h3>
+      <div class="kv" id="inst-summary"></div>
+      <div class="kv" id="inst-paths" style="margin-top:8px"></div>
+      <div class="kv amber" id="inst-note" style="margin-top:8px"></div>
+    </div>
     <div class="card">
-      <h3>历史对账明细（平局剔除分母，#44）</h3>
+      <h3>历史对账明细（平局剔除分母，#44；口径分列 #61）</h3>
       <table id="reconcile-table"></table>
     </div>
   </section>
@@ -115,6 +121,7 @@ footer { text-align:center; color:var(--dim); font-size:12px; padding:18px; bord
           <h3>当日军团倾向（#50 回流显示）</h3>
           <div class="big" id="sbx-bull"></div>
           <div class="kv" id="sbx-nf"></div>
+          <div class="kv" id="sbx-instnf"></div>
           <h3 style="margin-top:12px">活跃事件卡（#42）</h3>
           <div class="kv" id="sbx-events">（无）</div>
         </div>
@@ -275,6 +282,7 @@ async function loadPrediction(date) {
   $('#quotes').innerHTML = (r.representativeQuotes || []).map((q) =>
     `<div class="quote">${esc(personaName(q.personaId))}：${esc(q.reason)}</div>`).join('') || '<span class="dim">（无）</span>';
   $('#pred-report').innerHTML = md(r.report.markdown);
+  renderInstCard(r);
   const warns = [];
   if (r.dispersionNarrow) warns.push('⚠ 分歧度过窄告警（#39）：K 轮方向完全一致，分布可能偏窄。');
   if (r.intradayNote) warns.push('⚠ ' + esc(r.intradayNote) + '（#46）');
@@ -283,21 +291,61 @@ async function loadPrediction(date) {
   $('#pred-warn').innerHTML = warns.concat(flags).map((w) => `<div class="warn">${w}</div>`).join('');
 }
 
+// ---------- 机构决策层卡（v1.4 #64：数据源=PredictionResult.inst，additive 自愈） ----------
+const INST_PATH_LABEL = { margin: 'M1 两融杠杆', etfSse: 'M2 被动ETF（仅A股股票型）', eventSeat: 'M3 事件席位', quarterlyStructure: 'M4 季频结构', northbound: 'M5 北向（不可观测）' };
+function renderInstCard(r) {
+  const card = $('#inst-card');
+  const inst = r.inst;
+  if (!inst || !Array.isArray(inst.paths) || inst.paths.length === 0) {
+    $('#inst-summary').innerHTML = '<span class="dim">机构层：不可用（旧记录缺载荷，#64 自愈）</span>';
+    $('#inst-paths').innerHTML = '';
+    $('#inst-note').innerHTML = '';
+    return;
+  }
+  const fmtYi = (v) => (v === null || v === undefined || !isFinite(v)) ? 'null' : (v >= 0 ? '+' : '') + v.toFixed(2);
+  $('#inst-summary').innerHTML =
+    `信息性 Σ（亿元、未折算，仅展示非 NF）：<strong>${fmtYi(inst.netFlowYi)}</strong> ｜ asOf ${esc(inst.asOf ?? '?')}` +
+    (r.flowScope ? ` ｜ 命中口径 <strong>${esc(r.flowScope)}</strong>（#61 分列）` : '');
+  $('#inst-paths').innerHTML = inst.paths.map((p) => {
+    const val = p.netFlowYi === null || p.netFlowYi === undefined
+      ? '<span class="dim">netFlowYi=null（季频/北向不产 NF 或数据降级）</span>'
+      : `<strong>${fmtYi(p.netFlowYi)} 亿</strong>`;
+    const asof = p.asOf ? `｜asOf ${esc(p.asOf)}` : '｜asOf 不可得';
+    return `<div>· ${esc(INST_PATH_LABEL[p.pathId] || p.pathId)}：${val}${asof}</div>`;
+  }).join('');
+  // 数据源灯：季频/北向恒 null 为设计（#58/#59），日频路径 null 才是降级
+  const lights = inst.paths.map((p) => {
+    const designedNull = p.pathId === 'quarterlyStructure' || p.pathId === 'northbound';
+    const ok = p.netFlowYi !== null && p.netFlowYi !== undefined;
+    if (p.pathId === 'northbound') return '<span class="light warn"></span>北向：2024-08 停披露（不可观测）';
+    if (p.pathId === 'etfSse') return `<span class="${ok ? 'light' : 'light warn'}"></span>沪市ETF：${ok ? '正常（A股口径）' : '降级'}；深市：✗ 不可观测`;
+    if (p.pathId === 'quarterlyStructure') return '<span class="light"></span>季频：滞后按公告日/报告期（#58）';
+    return `<span class="${ok ? 'light' : 'light warn'}"></span>${esc(INST_PATH_LABEL[p.pathId] || p.pathId)}：${ok ? '正常' : '降级'}`;
+  }).join('；');
+  $('#inst-note').innerHTML =
+    `${lights}<br>折算系数为一期未校准默认值（1 亿元→0.1 NF 单位，#60），校准依赖二期对账数据积累。` +
+    ((inst.degraded || []).length ? `<br>降级标注：${esc((inst.degraded || []).map((d) => d.note || d.source).join('；'))}` : '');
+}
+
 async function loadReconcile() {
   const recs = await api('/api/reconcile').catch(() => []);
   const settled = (recs || []).filter((x) => x.outcome);
-  const stat = (h) => {
-    const rs = settled.filter((x) => x.horizon === h);
+  // 命中率横幅按 flowScope 分组渲染（v1.4 #61：分列不混算；缺省口径=retail）
+  const stat = (h, scope) => {
+    const rs = settled.filter((x) => x.horizon === h && (x.flowScope ?? 'retail') === scope);
     const ties = rs.filter((x) => x.outcome === 'tie').length;
     const hits = rs.filter((x) => x.outcome === 'hit').length;
     const decided = rs.length - ties;
     return `${decided > 0 ? `最近 ${decided} 次命中 ${hits} 次（${(hits / decided * 100).toFixed(0)}%）` : '暂无已结算预测'}${ties ? `，另有 ${ties} 次平局未计入` : ''}`;
   };
-  $('#hit-banner').innerHTML = `📊 <strong>1 日</strong>：${stat('1d')} ｜ <strong>5 日</strong>：${stat('5d')}`;
+  const hasInstScope = (recs || []).some((x) => (x.flowScope ?? 'retail') === 'retail+inst');
+  let banner = `📊 <strong>1 日</strong>[retail]：${stat('1d', 'retail')} ｜ <strong>5 日</strong>[retail]：${stat('5d', 'retail')}`;
+  if (hasInstScope) banner += ` ｜ <strong>1 日</strong>[retail+inst]：${stat('1d', 'retail+inst')} ｜ <strong>5 日</strong>[retail+inst]：${stat('5d', 'retail+inst')}`;
+  $('#hit-banner').innerHTML = banner;
   $('#reconcile-table').innerHTML =
-    '<tr><th>锚定日</th><th>期限</th><th>预测</th><th>实际</th><th>结果</th></tr>' +
+    '<tr><th>锚定日</th><th>期限</th><th>口径</th><th>预测</th><th>实际</th><th>结果</th></tr>' +
     (recs || []).slice(-20).reverse().map((x) =>
-      `<tr><td>${esc(x.anchorDate)}</td><td>${esc(x.horizon)}</td><td>${x.predictedDirection === 1 ? '看多' : x.predictedDirection === -1 ? '看空' : '持平'}</td>` +
+      `<tr><td>${esc(x.anchorDate)}</td><td>${esc(x.horizon)}</td><td>${esc(x.flowScope ?? 'retail')}</td><td>${x.predictedDirection === 1 ? '看多' : x.predictedDirection === -1 ? '看空' : '持平'}</td>` +
       `<td>${x.actualPct === null ? '未结算' : x.actualPct.toFixed(2) + '%'}</td>` +
       `<td class="${x.outcome === 'hit' ? 'green' : x.outcome === 'miss' ? 'red' : 'dim'}">${x.outcome ?? '…'}</td></tr>`).join('');
 }
@@ -333,6 +381,10 @@ function renderSbxDay() {
   // 大数字 + 事件
   $('#sbx-bull').innerHTML = `<span class="${d.legionBullPct >= 0.5 ? 'green' : 'red'}">${fmtPct(d.legionBullPct)}</span>`;
   $('#sbx-nf').textContent = `净流 ${d.netFlow.toFixed(3)} ｜ 方向 ${d.direction === 1 ? '做多' : d.direction === -1 ? '做空' : '观望'}`;
+  // 机构净流（v1.4 #60/#41：锚定日冻结值，不衰减不重算；旧记录缺字段 → 渲染省略）
+  $('#sbx-instnf').textContent = (d.instNF === null || d.instNF === undefined)
+    ? ''
+    : `机构净流 ${d.instNF.toFixed(3)}（锚定日冻结值，#41）｜ 合成方向见上（含机构常数，#60）`;
   $('#sbx-events').innerHTML = d.activeEvents.length
     ? d.activeEvents.map((e) => `🃏 ${esc(e.text)}（权重 ${e.weight.toFixed(2)}）`).join('<br>')
     : '（无）';
@@ -396,12 +448,24 @@ $('#modal').addEventListener('click', (e) => { if (e.target === $('#modal')) $('
 
 async function loadLights() {
   const dates = await api('/api/runs');
+  const cfg = await api('/api/config').catch(() => null);
+  const instEnabled = !!(cfg && cfg.instLayer && cfg.instLayer.enabled !== false);
   let lights = '<span class="light"></span>行情：正常';
   if (dates.predictions.length) {
     const r = await api('/api/run/prediction/' + encodeURIComponent(dates.predictions[0]));
-    const degraded = (r.rounds && 0) || 0;
     lights = (r.report && r.report.participationNote ? '<span class="light warn"></span>本轮有 Agent 缺席；' : '<span class="light"></span>本轮全员参战；');
     lights += r.days && r.days.length ? '<span class="light"></span>行情新鲜' : '';
+    // 机构数据源灯位（v1.4 #64）：从最新预测的 inst 载荷取；旧记录缺载荷 → 「不可用」灯
+    const inst = r.inst;
+    if (inst && Array.isArray(inst.paths) && inst.paths.length) {
+      const byId = Object.fromEntries(inst.paths.map((p) => [p.pathId, p]));
+      const l = (p) => (p && p.netFlowYi !== null && p.netFlowYi !== undefined ? '<span class="light"></span>' : '<span class="light warn"></span>');
+      lights += `；机构层：<span class="${instEnabled ? 'light' : 'light warn'}"></span>开关${instEnabled ? '（开）' : '（关，旧口径）'}；` +
+        `${l(byId.margin)}两融 ${l(byId.etfSse)}沪市ETF(A股口径) <span class="light warn"></span>深市ETF(不可观测) ` +
+        `${l(byId.eventSeat)}龙虎榜+大宗 <span class="light"></span>季频(滞后按公告日) <span class="light warn"></span>北向(2024-08 停披露)`;
+    } else {
+      lights += '；机构层：<span class="light warn"></span>不可用（旧记录）';
+    }
   }
   $('#src-lights').innerHTML = lights;
 }
@@ -414,11 +478,14 @@ async function loadCfg() {
   const cfg = await api('/api/config').catch(() => null);
   if (!cfg) return;
   const k = Math.max(1, Number(cfg.sandboxK) || 1);
+  const layer = cfg.instLayer || {};
+  const layerPaths = layer.paths || {};
   // 预测 = 30 Agent ×（第 1 日 K=5 + 第 2–5 日 K=1×4）+ 总编 1；沙盘 = 30 × K × 天数 + 总编 1（总编按运行计，不按天摊）
+  // 机构层零 LLM 调用（v1.4 #64：数据驱动规则路径，不占名册不占成本）
   $('#cost-estimate').textContent =
     `成本预估：预测一次 ≈ ${30 * 9 + 1} 次 LLM 调用（30 Agent × [K5+K1×4] + 总编 1）；` +
-    `沙盘 ≈ ${30 * k} 次/日 × 天数（30 Agent × K=${k}）+ 总编 1 次/运行。` +
-    `冲击系数 k=${cfg.impactK ?? 0.8}（一期未校准，#21；校准依赖二期对账数据）。`;
+    `沙盘 ≈ ${30 * k} 次/日 × 天数（30 Agent × K=${k}）+ 总编 1 次/运行；机构层 0 次 LLM 调用（规则路径，#64）。` +
+    `冲击系数 k=${cfg.impactK ?? 0.8}（一期未校准，#21）；机构折算系数 nfScale=${layer.nfScale ?? 0.1}（一期未校准，#60）。`;
   const emo = cfg.emotion || {};
   const rows = [
     ['标的指数', cfg.index === 'CSI300' ? '沪深300' : '上证指数'],
@@ -428,6 +495,12 @@ async function loadCfg() {
     ['沙盘每日采样轮数 K', k],
     ['人设池随机种子', cfg.seed],
     ['情绪权重（事件/盈亏/大盘）', `${emo.eventWeight ?? '?'} / ${emo.pnlWeight ?? '?'} / ${emo.marketWeight ?? '?'}`],
+    // 机构决策层五键（v1.4 #58–#60 配置键）
+    ['机构决策层开关', layer.enabled === false ? '关（旧口径回退锚）' : '开'],
+    ['机构折算系数 nfScale', `${layer.nfScale ?? 0.1}（未校准，#60）`],
+    ['机构路径·两融杠杆', layerPaths.margin === false ? '关' : '开'],
+    ['机构路径·被动ETF（仅A股股票型）', layerPaths.etf === false ? '关' : '开'],
+    ['机构路径·事件席位', layerPaths.event === false ? '关' : '开'],
   ];
   $('#cfg-list').innerHTML = rows.map(([a, b]) => `<div>· ${esc(String(a))}：<strong>${esc(String(b))}</strong></div>`).join('');
 }

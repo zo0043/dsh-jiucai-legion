@@ -137,14 +137,17 @@ class TestFundsAggregate:
         monkeypatch.setattr(fake_ak_module, "stock_margin_sse", lambda start_date, end_date: fake_margin_df(
             [("2026-11-05", 10200.0)]
         ))
+        # 港股通行：get_funds 同一次响应同时解析南向（v1.4 #59，零重复出网）
         monkeypatch.setattr(
             fake_ak_module,
             "stock_hsgt_fund_flow_summary_em",
-            lambda: fake_hsgt_df([("2026-11-04", "沪股通", 50.0, 55.0)]),
+            lambda: fake_hsgt_df([("2026-11-04", "沪股通", 50.0, 55.0), ("2026-11-04", "港股通(沪)", 30.0, 420.0)]),
         )
         result = get_funds("SH000001")
         assert result["marginBalance"] == 10200.0
         assert result["northboundNet"] == 50.0
+        assert result["southboundNetYi"] == 30.0  # 南向（#59 资金分流 signals，不作北向代理）
+        assert result["southboundAsOf"] == "2026-11-04"
         assert result["asOf"] == "2026-11-05"  # 取较新者
         assert result["marginAsOf"] == "2026-11-05"  # 数据流分析修复：按字段标注各自交易日
         assert result["northAsOf"] == "2026-11-04"
@@ -165,6 +168,8 @@ class TestFundsAggregate:
         result = get_funds("SH000001")
         assert result["marginBalance"] == 1.0
         assert result["northboundNet"] is None
-        assert len(result["degraded"]) == 1
+        # v1.4 #59：summary_em 失败 → 北向/南向各自一条降级标注（共用同一失败源）
+        assert len(result["degraded"]) == 2
+        assert result["southboundNetYi"] is None
         # asOf 退化为可用一方的 asOf（字符串日期，非当前时刻）
         assert result["asOf"] == "2026-11-05"

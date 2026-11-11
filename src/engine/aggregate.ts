@@ -163,10 +163,12 @@ export function topWeightShare(
   return weights.slice(0, n).reduce((s, w) => s + w, 0) / total;
 }
 
-/** K 轮分歧度：方向不一致的比例（#39 告警输入） */
+/** K 轮分歧度：方向不一致的比例（#39 告警输入）。
+ * v1.4 #61：一律读 retailDirection（纯散户口径，additive）——机构层是全体轮共加的常数，
+ * 不得间接改写分歧语义；旧落盘记录缺字段 → 回退 direction（逐点等价旧口径）。 */
 export function dispersionOf(rounds: RoundResult[]): number {
   if (rounds.length <= 1) return 0;
-  const dirs = rounds.map((r) => r.direction);
+  const dirs = rounds.map((r) => r.retailDirection ?? r.direction);
   const counts = new Map<number, number>();
   for (const d of dirs) counts.set(d, (counts.get(d) ?? 0) + 1);
   let maxShare = 0;
@@ -174,12 +176,13 @@ export function dispersionOf(rounds: RoundResult[]): number {
   return 1 - maxShare; // 0 = 全体同向（分歧最窄），越大分歧越大
 }
 
-/** 分歧度过窄判定（#39）：5 轮全同向且净流标准差相对均值极小 */
+/** 分歧度过窄判定（#39）：5 轮全同向且净流标准差相对均值极小。
+ * v1.4 #61：方向读 retailDirection、净流读 retailNetFlow（纯散户口径），旧记录回退合成字段。 */
 export function isDispersionNarrow(rounds: RoundResult[]): boolean {
   if (rounds.length < 3) return false;
-  const dirs = new Set(rounds.map((r) => r.direction));
+  const dirs = new Set(rounds.map((r) => r.retailDirection ?? r.direction));
   if (dirs.size > 1) return false;
-  const nfs = rounds.map((r) => r.netFlow);
+  const nfs = rounds.map((r) => r.retailNetFlow ?? r.netFlow);
   const m = median(nfs);
   const variance = nfs.reduce((s, x) => s + (x - m) ** 2, 0) / nfs.length;
   const sd = Math.sqrt(variance);

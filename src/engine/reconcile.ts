@@ -13,6 +13,8 @@ import { classifyOutcome, directionOf, rollingHitRate } from './aggregate.js';
  */
 export function recordsFromPrediction(result: PredictionResult): ReconcileRecord[] {
   const mock = result.mock === true;
+  // 命中口径断代（v1.4 #61）：随记录携带当时的 flowScope；旧结果缺字段 → 'retail'
+  const flowScope = result.flowScope ?? 'retail';
   const d1 = result.days[0];
   const rec1: ReconcileRecord | null = d1
     ? {
@@ -24,6 +26,7 @@ export function recordsFromPrediction(result: PredictionResult): ReconcileRecord
         actualPct: null,
         outcome: null,
         settledAt: null,
+        flowScope,
         mock,
       }
     : null;
@@ -42,6 +45,7 @@ export function recordsFromPrediction(result: PredictionResult): ReconcileRecord
       actualPct: null,
       outcome: null,
       settledAt: null,
+      flowScope,
       mock,
     };
   }
@@ -84,22 +88,40 @@ export function settleRecords(
   return { settled, remaining };
 }
 
+/** 命中口径（v1.4 #61 分列断代）：'retail' = 纯散户（旧记录缺省），'retail+inst' = 含机构折算 */
+export type FlowScope = 'retail' | 'retail+inst';
+
 /** 滚动命中率（#35）：1 日与 5 日分开统计，平局剔除分母（#44）；mock 运行不计入（F21） */
 export function reconcileSummary(records: ReconcileRecord[], window = 20): {
   d1: { hits: number; decided: number; rate: number; ties: number };
   d5: { hits: number; decided: number; rate: number; ties: number };
+  /** v1.4 #61 分列（不混算）：按 flowScope 分组的 d1/d5；顶层 d1/d5 = byScope.retail
+   * （旧记录全部缺省 retail → 与旧口径逐点一致）。 */
+  byScope: Record<FlowScope, { d1: { hits: number; decided: number; rate: number; ties: number }; d5: { hits: number; decided: number; rate: number; ties: number } }>;
 } {
   const settled = records.filter((r) => r.outcome !== null && r.mock !== true);
-  const pick = (h: '1d' | '5d') =>
+  const pick = (h: '1d' | '5d', scope: FlowScope) =>
     settled
-      .filter((r) => r.horizon === h)
+      .filter((r) => r.horizon === h && (r.flowScope ?? 'retail') === scope)
       .sort((a, b) => a.anchorDate.localeCompare(b.anchorDate))
       .map((r) => r.outcome!) as ('hit' | 'miss' | 'tie')[];
-  return { d1: rollingHitRate(pick('1d'), window), d5: rollingHitRate(pick('5d'), window) };
+  const group = (scope: FlowScope) => ({
+    d1: rollingHitRate(pick('1d', scope), window),
+    d5: rollingHitRate(pick('5d', scope), window),
+  });
+  const byScope: Record<FlowScope, ReturnType<typeof group>> = {
+    retail: group('retail'),
+    'retail+inst': group('retail+inst'),
+  };
+  return { d1: byScope.retail.d1, d5: byScope.retail.d5, byScope };
 }
 
-/** 命中率横幅文案（#35：「最近 20 次命中 12 次」） */
-export function hitRateBanner(s: { hits: number; decided: number; rate: number; ties: number }): string {
-  if (s.decided === 0) return '暂无已结算预测（平局不计入）';
-  return `最近 ${s.decided} 次命中 ${s.hits} 次（另有 ${s.ties} 次平局未计入）`;
+/** 命中率横幅文案（#35：「最近 20 次命中 12 次」）；scope 可选 → 行内标注口径（#61 分列） */
+export function hitRateBanner(
+  s: { hits: number; decided: number; rate: number; ties: number },
+  scope?: FlowScope,
+): string {
+  const label = scope ? `【口径 ${scope}】` : '';
+  if (s.decided === 0) return `${label}暂无已结算预测（平局不计入）`;
+  return `${label}最近 ${s.decided} 次命中 ${s.hits} 次（另有 ${s.ties} 次平局未计入）`;
 }

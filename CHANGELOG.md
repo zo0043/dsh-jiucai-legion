@@ -2,6 +2,25 @@
 
 本项目的所有显著变更记录于此文件。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### Added — 机构决策层（需求文档 v1.4，#58 起；修订 #16，用户明确授权）
+- **机构五路径数据接入**（`python/djiucai_data/institution.py` + `funds.py` 南向扩展 + `snapshot.py` inst 块）：M1 两融（沪+深汇总差分，Δ融资−Δ融券，T+1）、M2 被动 ETF（上交所份额截面差分×同花顺分类，**仅计入「A股股票型」**——跨境/债券/货币/其他只进 signals 分桶、明示「不计入净流口径」；前值按日期参数直拉历史截面）、M3 事件席位（新浪龙虎榜机构席位+东财大宗「机构专用」，T+0 盘后）、M4 季频结构（基金家数增减/股东性质/股东户数/香港中央结算季度持股=唯一合法北向季度代理，按公告日/报告期滞后标注，不产 NF）、M5 北向恒 null（2024-08 停披露，不可观测不伪造；南向日频真实但只作「资金分流」signals，零重复出网）。每源独立重试+全兜底 null+DataSourceFlag（#24 分级降级），单位统一亿元，逐字段 asOf。
+- **TS 机构规则引擎**（`src/engine/institutions.ts`）：`institutionNetFlow` 纯函数为唯一折算处（nfScale×Σ日频路径亿元），null 路径跳过并记降级，季频/北向不参与；`instLayer={enabled,nfScale,paths}` 配置键进设置 schema（`instEnabled/instNfScale/instPathMargin/instPathEtf/instPathEvent` 五键）；`INST_UNCALIBRATED_NOTE` 面板/CLI 明示（默认 0.1，与全体军团同量级、可单独翻转方向，#60 量级锚）。
+- **净流合成**（#60）：`runRound` 增 `instNF` 入参，nf=散户净流+机构折算常数（median 平移不变，冲击映射分母保持散户权重和）；`PredictionResult` 落盘 `inst`（锚定日载荷）与 `flowScope`；`SandboxResult.inst`/`SandboxDay.instNF` 取锚定日冻结值（#41 不衰减不重算）。
+- **口径断代与分列**（#61）：`RoundResult` 增 `retailNetFlow/retailDirection`（#39 分歧度与日报分歧话术保持纯散户口径，旧记录回退）；`ReconcileRecord.flowScope` 随记录断代，`reconcileSummary` 按口径分组、CLI 命中率横幅与面板命中率横幅按 `retail / retail+inst` 分列展示、不混算。
+- **信息集「机构动向」行**（#62）：`buildCommonBlock` 资金面行后规则模板拼装（零 LLM），逐子句标注各自 asOf、每源 null 如实降级、非权益/跨境 ETF 申赎旁注「不计入净流口径」；不新增洗牌块，与集中度传闻解耦；情绪三源/记忆/内心戏/气候块零机构内容（封闭面单测锁定）。
+- **面板与日报**（#64）：预测页独立「机构决策层」卡（五路径净流/信号/asOf/数据源灯+未校准系数明示），沙盘页机构净流标注「锚定日冻结值」，成本预估补「机构层 0 次 LLM」，总编日报增「机构动向」叙事行且 LLM 失败兜底模板同步包含（#28 日报永不缺席）。
+- **探针与文档**：`scripts/institution_probe.py` 真实网络两阶段探针（锚点复现+集成联测）；README「机构决策层」节（数据源表/不可观测声明/量级锚/出网白名单）；需求文档 v1.4 章节（#58–#64）+ 版本头更正 + #16 修正标记 + 第 8 节北向事实更正。
+
+### Fixed
+- 同交易日旧快照缓存（升级前形态无 inst）自动重算一次的兼容条款（#64 additive 自愈）。
+
+### 已知限制
+- 机构净流折算系数（nfScale=0.1）为一期未校准默认值，预测输出与面板明示；校准依赖二期对账数据积累。
+- 北向每日净买（上游 2024-08 停披露）、深市 ETF 份额、机构日内真实调仓：不可观测，如实标注不伪造。
+- ETF 份额口径含申赎/拆分噪声，M2 定性为「资金流代理」；A股股票型口径由数据侧过滤（实测无过滤时 53% 净流幅度来自非 A 股资产）。
+
 ## [0.1.0] - 2026-11-06
 
 ### Added

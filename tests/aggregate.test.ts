@@ -212,3 +212,26 @@ describe('capitalWeightedSplit 资金加权份额（P5）', () => {
     expect(topWeightShare([], pm, DEFAULT_CONFIG, 5)).toBe(0);
   });
 });
+
+// ---------- v1.4 #61：分歧度保持纯散户口径（机构层常数不得间接改写告警频度） ----------
+describe('#39/#61 分歧度纯散户隔离', () => {
+  function mkRound(netFlow: number, direction: -1 | 0 | 1, retailNetFlow?: number, retailDirection?: -1 | 0 | 1): RoundResult {
+    return { round: 0, outputs: [], missing: [], participants: 30, netFlow, direction, offsetPct: 0, ...(retailNetFlow !== undefined ? { retailNetFlow, retailDirection } : {}) };
+  }
+  it('isDispersionNarrow 读 retailNetFlow/retailDirection：机构常数加入前后逐位一致', () => {
+    // 散户 [100, 100.1, 100.2] 全同向 → rel sd < 10% → 过窄；机构 +10 后合成 [110, 110.1, 110.2]
+    const retailOnly = [mkRound(100, 1), mkRound(100.1, 1), mkRound(100.2, 1)];
+    const withInst = [mkRound(110, 1, 100, 1), mkRound(110.1, 1, 100.1, 1), mkRound(110.2, 1, 100.2, 1)];
+    expect(isDispersionNarrow(withInst)).toBe(true);
+    expect(isDispersionNarrow(withInst)).toBe(isDispersionNarrow(retailOnly));
+    expect(dispersionOf(withInst)).toBe(dispersionOf(retailOnly));
+    // 合成口径若被误读（净流差异被机构常数稀释）会翻转结果——防回归断言
+    const dilution = [mkRound(110, 1, 100, 1), mkRound(120, 1, 100.1, 1), mkRound(130, 1, 100.2, 1)];
+    expect(isDispersionNarrow(dilution)).toBe(true); // retail [100,100.1,100.2] 仍过窄（不看合成 [110,120,130]）
+  });
+  it('旧落盘 RoundResult 无 retail 字段 → 回退 netFlow/direction（逐点等价旧口径）', () => {
+    const legacy = [mkRound(100, 1), mkRound(100.1, 1), mkRound(100.2, 1)];
+    expect(isDispersionNarrow(legacy)).toBe(true);
+    expect(dispersionOf(legacy)).toBe(0);
+  });
+});

@@ -1,8 +1,11 @@
 """市场快照聚合（对齐技术设计 §4 的 MarketSnapshot Python 侧字段）。
 
 聚合：日线（daily）+ 市场宽度（breadth #22）+ 情绪热度（sentiment #30）+
-新闻（news #23）+ 资金面（funds #47），并计算 20 日年化波动率（impact 标定输入 #21）。
+新闻（news #23）+ 资金面（funds #47）+ 机构决策层（inst，v1.4 #58），并计算
+20 日年化波动率（impact 标定输入 #21）。
 legionBullPct（军团看多比例）由 TS 引擎回流计算，Python 侧恒为 null。
+inst 为机构五路径**原始载荷**（亿元、未折算，#60）；折算只发生在 TS 侧
+institutionNetFlow（经 cfg.instLayer.nfScale）。
 degraded 汇总所有子源标注（需求 #24/#32 分级降级）。
 """
 
@@ -15,6 +18,7 @@ from .breadth import get_breadth
 from .cache import load_cache, save_cache
 from .daily import get_daily_bars
 from .funds import get_funds
+from .institution import get_institution
 from .news import get_news
 from .sentiment import get_sentiment
 
@@ -60,7 +64,13 @@ def get_snapshot(index: str, date: Optional[str] = None, days: int = 250) -> dic
 
     if not date:
         cached = load_cache("snapshot", f"{index}.json")
-        if isinstance(cached, dict) and cached.get("tradeDate") == trade_date:
+        if (
+            isinstance(cached, dict)
+            and cached.get("tradeDate") == trade_date
+            # v1.4 自愈：升级前缓存的同交易日快照无机构载荷（#64 additive）→ 重算一次，
+            # 当日后续调用即可复用带 inst 的新形态
+            and "inst" in cached
+        ):
             return cached  # 同一交易日 → 命中
 
     # 波动率输入：锚定日前最近 21 个收盘
@@ -91,6 +101,11 @@ def get_snapshot(index: str, date: Optional[str] = None, days: int = 250) -> dic
     funds = get_funds(index)
     degraded.extend(funds["degraded"])
 
+    # 机构决策层五路径（v1.4 #58）：原始载荷随 getSnapshot 透传（data-client spread 自动到位）；
+    # 南向随 funds 载荷传入 → 零重复出网；折算只发生在 TS 侧 institutionNetFlow（#60）
+    inst = get_institution(funds=funds)
+    degraded.extend(inst["degraded"])
+
     snapshot = {
         "index": index,
         "tradeDate": trade_date,
@@ -115,7 +130,12 @@ def get_snapshot(index: str, date: Optional[str] = None, days: int = 250) -> dic
             "asOf": funds["asOf"],
             "marginAsOf": funds.get("marginAsOf"),
             "northAsOf": funds.get("northAsOf"),
+            # 南向（#59 资金分流 signals，不作北向代理）；旧 funds 载荷缺字段 → None 自愈
+            "southboundNetYi": funds.get("southboundNetYi"),
+            "southboundAsOf": funds.get("southboundAsOf"),
         },
+        # 机构决策层原始五路径载荷（#58–#60；degraded 同时保留在块内供面板数据源灯）
+        "inst": inst,
         "volatility20": vol,
         "legionBullPct": None,  # 军团看多比例由 TS 引擎回流计算（#50）
         "degraded": degraded,

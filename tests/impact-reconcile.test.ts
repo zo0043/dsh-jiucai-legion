@@ -93,3 +93,44 @@ describe('reconcile（#35/#44 双 horizon + 平局剔除）', () => {
     expect(DEFAULT_CONFIG.historyDays).toBe(250);
   });
 });
+
+// ---------- v1.4 #61：flowScope 分列断代（分列定死，不混算） ----------
+describe('flowScope 分列断代（#61）', () => {
+  it('recordsFromPrediction 读 result.flowScope：两条记录均携带；缺字段 → retail（签名未变）', () => {
+    const withScope = { ...mkPrediction([{}, {}, {}, {}, {}]), flowScope: 'retail+inst' as const };
+    const recs = recordsFromPrediction(withScope);
+    expect(recs).toHaveLength(2);
+    expect(recs.every((r) => r.flowScope === 'retail+inst')).toBe(true);
+    const legacy = recordsFromPrediction(mkPrediction([{}, {}, {}, {}, {}]));
+    expect(legacy.every((r) => (r.flowScope ?? 'retail') === 'retail')).toBe(true);
+  });
+  it('reconcileSummary 按 flowScope 分组：retail 2 hit + retail+inst 2 miss → 100%/0%，顶层=retail 不混算', () => {
+    const mk = (i: number, flowScope?: 'retail' | 'retail+inst', outcome: 'hit' | 'miss' = 'hit'): ReconcileRecord => ({
+      anchorDate: `2026-01-${String(i + 1).padStart(2, '0')}`,
+      horizon: '1d', index: 'SH000001',
+      predictedDirection: 1, predictedMedianPct: 1,
+      actualPct: outcome === 'hit' ? 1 : -1, outcome, settledAt: 'now',
+      ...(flowScope ? { flowScope } : {}),
+    });
+    const recs = [mk(1), mk(2), mk(3, 'retail+inst', 'miss'), mk(4, 'retail+inst', 'miss')];
+    const s = reconcileSummary(recs, 20);
+    expect(s.byScope.retail.d1.decided).toBe(2);
+    expect(s.byScope.retail.d1.rate).toBe(1);
+    expect(s.byScope['retail+inst'].d1.decided).toBe(2);
+    expect(s.byScope['retail+inst'].d1.rate).toBe(0);
+    // 顶层兼容键 = retail 分组（旧记录全部缺省 retail → 与旧口径逐点一致）
+    expect(s.d1.decided).toBe(2);
+    expect(s.d1.rate).toBe(1);
+    // 混算防护：合并统计不等于任一分组
+    const mixedDecided = s.byScope.retail.d1.decided + s.byScope['retail+inst'].d1.decided;
+    expect(mixedDecided).toBe(4);
+    expect(s.d1.decided).not.toBe(mixedDecided);
+  });
+  it('hitRateBanner 可选口径标注（#61 CLI 分列）', () => {
+    const s = { hits: 3, decided: 4, rate: 0.75, ties: 1 };
+    expect(hitRateBanner(s)).not.toContain('口径');
+    expect(hitRateBanner(s, 'retail')).toContain('【口径 retail】');
+    expect(hitRateBanner(s, 'retail+inst')).toContain('【口径 retail+inst】');
+    expect(hitRateBanner(s, 'retail')).toContain('命中 3 次');
+  });
+});

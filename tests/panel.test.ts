@@ -87,3 +87,43 @@ describe('panel-server API', () => {
     expect((await fetch(`${BASE}/api/nope`)).status).toBe(404);
   });
 });
+
+// ---------- v1.4 #64：机构字段 additive 透传（SCHEMA_VERSION=1 不变）+ 面板静态内容 ----------
+describe('panel 机构决策层（#64 additive）', () => {
+  it('GET /api/run/prediction/<key> 透传 inst/flowScope（旧记录缺字段 → undefined 自愈）', async () => {
+    handle = await startPanelServer({ storeDir: dir, port: PORT + 1 });
+    // 写入带 inst 的新形态记录
+    writeEnvelope('runs/prediction/2026-02-06.json', {
+      anchorDate: '2026-02-06',
+      days: [{ tradeDate: '2026-02-09', closeEstimate: 3010, band: { p10: 2990, p90: 3030 }, direction: 1, netFlowMedian: 2, offsetPct: 0.5 }],
+      terminal: { dist: [3010], median: 3010 }, multiBullPct: 0.6, multiBearPct: 0.2,
+      dispersionNarrow: false, coldStartNote: null, intradayNote: null, representativeQuotes: [],
+      report: { markdown: '# 日报', camps: [], dispersionNote: '', participationNote: null },
+      rounds: [],
+      inst: { asOf: '2026-02-06', netFlowYi: 8.374, paths: [{ pathId: 'margin', label: 'M1', netFlowYi: 100, signals: {}, asOf: '2026-02-06' }], degraded: [] },
+      flowScope: 'retail+inst',
+    });
+    const withInst = await (await fetch(`${BASE.replace(String(PORT), String(PORT + 1))}/api/run/prediction/2026-02-06`)).json();
+    expect(withInst.inst.netFlowYi).toBe(8.374);
+    expect(withInst.flowScope).toBe('retail+inst');
+    // 旧形态记录（beforeAllData 的 2026-01-06）无该字段 → 原样缺省（渲染层省略，#28 自愈）
+    const legacy = await (await fetch(`${BASE.replace(String(PORT), String(PORT + 1))}/api/run/prediction/2026-01-06`)).json();
+    expect(legacy.inst).toBeUndefined();
+    expect(legacy.flowScope).toBeUndefined();
+  });
+
+  it('panel.html 静态内容：机构卡/锚定日冻结值/口径分列/成本 0 次 LLM/设置五键', async () => {
+    handle = handle ?? await startPanelServer({ storeDir: dir, port: PORT + 1 });
+    const base = `http://127.0.0.1:${PORT + 1}`;
+    const html = await (await fetch(base + '/')).text();
+    expect(html).toContain('机构决策层');           // 预测页独立机构卡
+    expect(html).toContain('inst-card');
+    expect(html).toContain('锚定日冻结值');          // 沙盘页 instNF 标注（#41）
+    expect(html).toContain('retail+inst');          // 命中率分列渲染（#61）
+    expect(html).toContain('机构层 0 次 LLM');       // 成本边界（#64）
+    expect(html).toContain('机构路径·两融杠杆');      // 设置五键展示（#58/#60）
+    expect(html).toContain('折算系数为一期未校准默认值'); // 未校准明示（#60）
+    // 机构不进名册：pool-grid 渲染逻辑只含 POOL + 总编卡（loadPool 无机构条目）
+    expect(html).not.toContain('data-id="__inst"');
+  });
+});

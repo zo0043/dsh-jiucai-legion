@@ -176,3 +176,110 @@ describe('端到端（MockHost，#32 冷启动三步）', () => {
     expect(a.personas[0]!.systemPrompt).toBe(b.personas[0]!.systemPrompt);
   });
 });
+
+// ---------- v1.4 #60/#61：机构层进合成管线（端到端，MockHost） ----------
+import { institutionNetFlow } from '../src/engine/institutions.js';
+import type { InstitutionFlow } from '../src/engine/types.js';
+
+function instFixture(marginYi: number): InstitutionFlow {
+  return {
+    asOf: '2026-01-15',
+    netFlowYi: marginYi,
+    paths: [
+      { pathId: 'margin', label: 'M1', netFlowYi: marginYi, signals: { sseAsOf: '2026-01-15' }, asOf: '2026-01-15', note: null },
+      { pathId: 'etfSse', label: 'M2', netFlowYi: -14.96, signals: {}, asOf: '2026-01-15', note: null },
+      { pathId: 'eventSeat', label: 'M3', netFlowYi: -1.3, signals: { lhbYi: -2.5, dzjyYi: 1.2 }, asOf: '2026-01-15', note: null },
+      { pathId: 'quarterlyStructure', label: 'M4', netFlowYi: null, signals: {}, asOf: '2025-12-31', note: null },
+      { pathId: 'northbound', label: 'M5', netFlowYi: null, signals: { southboundNetYi: 45.72 }, asOf: null, note: '北向 2024-08 停披露' },
+    ],
+    degraded: [],
+  };
+}
+
+describe('机构层端到端（#60 合成 + #61 flowScope 断代）', () => {
+  it('predict：inst 常数加进每轮（median 平移）、flowScope=retail+inst、rounds 落 retail 字段', async () => {
+    const inst = instFixture(100); // nfScale 0.1 × 100 亿 = +10 NF
+    const instSnapshot = { ...snapshot, inst };
+    const cfg: EngineConfig = { ...DEFAULT_CONFIG, dataDir: dir, pythonBin: 'python3', quorumFloor: 24 };
+    const llm = new MockLlm();
+    llm.setFallback(() => '{\"target_position_pct\":0,\"confidence\":3,\"reason\":\"脚本化理由\"}');
+    const localBundle = {
+      cfg, ports: {
+        llm, proc: fakeProcPort(instSnapshot, fixtureCalendar()) as unknown as NodeSubprocessPort,
+        ui: new MockUi(), clock: new MockClock(new Date(`${instSnapshot.tradeDate}T16:00:00+08:00`)),
+      }, store: new Store(dir + '-inst'), data: new DataClient(
+        fakeProcPort(instSnapshot, fixtureCalendar()) as unknown as NodeSubprocessPort,
+        { pythonBin: 'python3', cwd: dir, dataDir: dir },
+      ), skipPing: true,
+    };
+    await cmdInit(localBundle);
+    const { result } = await cmdPredict(localBundle);
+    const instNF = institutionNetFlow(inst, cfg).netFlow;
+    expect(instNF).toBeCloseTo(10 - 0.1 * 14.96 - 0.13, 10); // 0.1×(100−14.96−1.3)=8.374
+    // 确定性常数平移：netFlow − retailNetFlow 每轮恒等于 instNF；median 同步平移
+    for (const r of result.rounds) {
+      expect(r.retailNetFlow).toBeDefined();
+      expect(r.netFlow - (r.retailNetFlow ?? 0)).toBeCloseTo(instNF, 10);
+      expect(r.retailDirection).toBeDefined();
+    }
+    const med = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+    expect(med(result.rounds.map((r) => r.netFlow)) - med(result.rounds.map((r) => r.retailNetFlow ?? 0))).toBeCloseTo(instNF, 10);
+    // 落盘：inst 原始载荷 + flowScope 按当时 cfg 写入
+    expect(result.inst).toEqual(inst);
+    expect(result.flowScope).toBe('retail+inst');
+    // 对账记录携带 flowScope
+    const recs = await localBundle.store.loadReconcile();
+    expect(recs.every((r) => r.flowScope === 'retail+inst')).toBe(true);
+    // 分歧告警读纯散户口径（#61）：目标=初始仓位 0 → 零调仓 → retail 恒 0；不因机构常数翻转
+    expect(result.rounds.every((r) => r.retailDirection === 0)).toBe(true);
+  });
+
+  it('predict：instLayer.enabled=false → flowScope=retail 且 netFlow=retailNetFlow（逐点等价旧口径）', async () => {
+    const inst = instFixture(100);
+    const instSnapshot = { ...snapshot, inst };
+    const cfg: EngineConfig = {
+      ...DEFAULT_CONFIG, dataDir: dir, pythonBin: 'python3', quorumFloor: 24,
+      instLayer: { enabled: false, nfScale: 0.1, paths: { margin: true, etf: true, event: true } },
+    };
+    const llm = new MockLlm();
+    llm.setFallback(() => '{"target_position_pct":80,"confidence":5,"reason":"梭哈"}');
+    const localBundle = {
+      cfg, ports: {
+        llm, proc: fakeProcPort(instSnapshot, fixtureCalendar()) as unknown as NodeSubprocessPort,
+        ui: new MockUi(), clock: new MockClock(new Date(`${instSnapshot.tradeDate}T16:00:00+08:00`)),
+      }, store: new Store(dir + '-off'), data: new DataClient(
+        fakeProcPort(instSnapshot, fixtureCalendar()) as unknown as NodeSubprocessPort,
+        { pythonBin: 'python3', cwd: dir, dataDir: dir },
+      ), skipPing: true,
+    };
+    await cmdInit(localBundle);
+    const { result } = await cmdPredict(localBundle);
+    expect(result.flowScope).toBe('retail');
+    for (const r of result.rounds) expect(r.netFlow).toBeCloseTo(r.retailNetFlow ?? 0, 10);
+  });
+
+  it('sandbox：SandboxDay.instNF 恒为锚定日冻结常数、SandboxResult.inst 原样落盘（#41）', async () => {
+    const inst = instFixture(50); // 0.1×(50−14.96−1.3)=3.374
+    const instSnapshot = { ...snapshot, inst };
+    const cfg: EngineConfig = { ...DEFAULT_CONFIG, dataDir: dir, pythonBin: 'python3', quorumFloor: 24 };
+    const llm = new MockLlm();
+    llm.setFallback(() => '{\"target_position_pct\":0,\"confidence\":3,\"reason\":\"脚本化理由\"}');
+    const localBundle = {
+      cfg, ports: {
+        llm, proc: fakeProcPort(instSnapshot, fixtureCalendar()) as unknown as NodeSubprocessPort,
+        ui: new MockUi(), clock: new MockClock(new Date(`${instSnapshot.tradeDate}T16:00:00+08:00`)),
+      }, store: new Store(dir + '-sbx'), data: new DataClient(
+        fakeProcPort(instSnapshot, fixtureCalendar()) as unknown as NodeSubprocessPort,
+        { pythonBin: 'python3', cwd: dir, dataDir: dir },
+      ), skipPing: true,
+    };
+    await cmdInit(localBundle);
+    const { result } = await cmdSandbox(localBundle, 3, '央行宣布全面降准 0.5 个百分点');
+    const instNF = institutionNetFlow(inst, cfg).netFlow;
+    expect(result.inst).toEqual(inst); // day-0 载荷原样冻结
+    expect(result.days).toHaveLength(3);
+    for (const d of result.days) expect(d.instNF).toBeCloseTo(instNF, 10); // 常数不衰减不重算
+    // 日报兜底或叙事含机构动向行（#64）
+    expect(result.report.markdown.length).toBeGreaterThan(0);
+  });
+});

@@ -13,7 +13,7 @@
  *   （#39 呈现顺序随机化；只动顺序、不动内容）。
  * 可见性规则（#14）：不互看具体操作，只有军团整体意见气候的交易日级回流（#50）。
  */
-import type { AgentState, Bar, Bias, LegionClimate, LegionMirror, MarketSnapshot, Persona, Style } from './types.js';
+import type { AgentState, Bar, Bias, InstitutionFlow, InstPathFlow, LegionClimate, LegionMirror, MarketSnapshot, Persona, Style } from './types.js';
 import { buildMemoryPrompt } from './memory.js';
 import { STYLE_LABEL } from './prompts.js';
 import { hashSeed, mulberry32, seededShuffle } from './persona-pool.js';
@@ -59,6 +59,118 @@ const INDEX_LABEL: Record<MarketSnapshot['index'], string> = {
   SH000001: '上证指数',
   CSI300: '沪深300',
 };
+
+// ---------- 公共块「机构动向」行（v1.4 #62：零 LLM 模板拼装） ----------
+
+/** 带符号金额（亿，1 位小数） */
+function fmtSigned(v: number): string {
+  return `${v >= 0 ? '+' : ''}${v.toFixed(1)}`;
+}
+
+function pathOf(inst: InstitutionFlow, pathId: InstPathFlow['pathId']): InstPathFlow | undefined {
+  return inst.paths.find((p) => p.pathId === pathId);
+}
+
+function num(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/**
+ * 公共块「机构动向」行（v1.4 #62）：在资金面行之后、新闻要点之前规则模板拼装（零 LLM）。
+ * - 每个子句按字段标注各自 asOf（两融 T+1、事件席位 T+0 盘后、季频报告期滞后）；
+ * - 每源 null → 如实降级文案（「未知（降级）」，funds 行先例）；全源 null → 整行
+ *   「机构动向：今日无可用机构数据（各源降级，如实标注）」；
+ * - 非权益/跨境 ETF 申赎以旁注子句呈现并明示「不计入净流口径」，绝不与 A 股口径净额相加；
+ * - 与 #57 集中度传闻解耦：本行只点名数据源（两融/ETF/龙虎榜/大宗），不出现
+ *   「大资金/主力」模糊身份词；
+ * - inst 载荷缺省（undefined，旧缓存快照）→ 返回 null → 整行省略（#64 additive 自愈）。
+ */
+export function buildInstLine(inst: InstitutionFlow | null | undefined): string | null {
+  if (!inst || !Array.isArray(inst.paths)) return null;
+  const clauses: string[] = [];
+
+  // M1 两融：净流入 + 维持担保比例（后者只进文案不改 NF，#58/#40）
+  const margin = pathOf(inst, 'margin');
+  if (margin) {
+    clauses.push(
+      num(margin.netFlowYi)
+        ? `两融净流入 ${fmtSigned(margin.netFlowYi)} 亿（截至 ${margin.signals['sseAsOf'] ?? margin.asOf ?? '未知'}，T+1）`
+        : '两融净流入未知（降级）',
+    );
+    const ratio = margin.signals['maintenanceRatio'];
+    const mAsOf = margin.signals['maintenanceAsOf'];
+    if (num(ratio)) {
+      clauses.push(`平均维持担保比例 ${Number(ratio).toFixed(1)}${num(mAsOf) ? `（截至 ${mAsOf}）` : ''}（安全垫参考，不计入净流）`);
+    }
+  } else {
+    clauses.push('两融净流入未知（降级）');
+  }
+
+  // M2 被动 ETF：仅 A 股股票型净申购 + 非权益/跨境申赎旁注（分桶金额不与净额相加，#58）
+  const etf = pathOf(inst, 'etfSse');
+  if (etf) {
+    clauses.push(
+      num(etf.netFlowYi)
+        ? `沪市 A股ETF 净申购 ${fmtSigned(etf.netFlowYi)} 亿（深市份额不可观测）`
+        : '沪市 A股ETF 净申购未知（降级）',
+    );
+    const s = etf.signals as { bondYi?: number | null; moneyYi?: number | null; otherYi?: number | null; crossBorderYi?: number | null };
+    const sideNotes: string[] = [];
+    if (num(s.bondYi)) sideNotes.push(`债券 ETF 申赎 ${fmtSigned(s.bondYi)} 亿`);
+    if (num(s.moneyYi)) sideNotes.push(`货币 ETF 申赎 ${fmtSigned(s.moneyYi)} 亿`);
+    if (num(s.otherYi)) sideNotes.push(`黄金等 ${fmtSigned(s.otherYi)} 亿`);
+    if (num(s.crossBorderYi)) sideNotes.push(`跨境 ${fmtSigned(s.crossBorderYi)} 亿`);
+    if (sideNotes.length > 0) clauses.push(`${sideNotes.join(' / ')}——均不计入净流口径（signals 分桶）`);
+  } else {
+    clauses.push('沪市 A股ETF 净申购未知（降级）');
+  }
+
+  // M3 事件席位：龙虎榜机构席位 + 大宗「机构专用」（T+0 盘后；折溢率不上信息集行）
+  const seat = pathOf(inst, 'eventSeat');
+  if (seat) {
+    const s = seat.signals as { lhbYi?: number | null; dzjyYi?: number | null; lhbAsOf?: string | null; dzjyAsOf?: string | null };
+    const lhb = num(s.lhbYi) ? `龙虎榜机构席位净买 ${fmtSigned(s.lhbYi)} 亿${s.lhbAsOf ? `（截至 ${s.lhbAsOf}）` : ''}` : '龙虎榜机构席位净买未知（降级）';
+    const dz = num(s.dzjyYi) ? `大宗「机构专用」净买 ${fmtSigned(s.dzjyYi)} 亿${s.dzjyAsOf ? `（截至 ${s.dzjyAsOf}）` : ''}` : '大宗「机构专用」净买未知（降级）';
+    clauses.push(`${lhb}、${dz}（T+0 盘后）`);
+  } else {
+    clauses.push('龙虎榜/大宗未知（降级）');
+  }
+
+  // M4 季频结构（只产结构信号不产 NF，#58）：基金家数增减 + 香港中央结算（北向季度代理）
+  const quarterly = pathOf(inst, 'quarterlyStructure');
+  if (quarterly) {
+    const s = quarterly.signals as {
+      fundHoldCount?: { asOf?: string | null; increaseCount?: number; decreaseCount?: number } | null;
+      hkscHolding?: { asOf?: string | null; totalStocks?: number | null } | null;
+    };
+    const fh = s.fundHoldCount;
+    const hk = s.hkscHolding;
+    const qParts: string[] = [];
+    if (fh && num(fh.increaseCount) && num(fh.decreaseCount)) {
+      qParts.push(`公募基金季报增持 ${fh.increaseCount} 家/减持 ${fh.decreaseCount} 家（报告期 ${fh.asOf ?? '未知'}，滞后披露）`);
+    }
+    if (hk && num(hk.totalStocks)) {
+      qParts.push(`香港中央结算（北向季度代理）持有 ${hk.totalStocks} 只（报告期 ${hk.asOf ?? '未知'}，滞后 30–40 天）`);
+    }
+    clauses.push(qParts.length > 0 ? qParts.join('；') : '季频结构未知（降级）');
+  } else {
+    clauses.push('季频结构未知（降级）');
+  }
+
+  // M5 北向恒不可观测（#59 如实）+ 南向只作资金分流 signals（不得充当北向代理）
+  const north = pathOf(inst, 'northbound');
+  clauses.push('北向每日净买：未披露（上游 2024-08 起停报）');
+  if (north) {
+    const sb = (north.signals as { southboundNetYi?: number | null }).southboundNetYi;
+    if (num(sb)) clauses.push(`南向（资金分流，非北向）${fmtSigned(sb)} 亿`);
+  }
+
+  // 全源降级（子句全部为「未知」类）→ 整行兜底文案，不渲染半残明细
+  if (clauses.every((c) => c.includes('未知（降级）') || c.includes('未披露'))) {
+    return '机构动向：今日无可用机构数据（各源降级，如实标注）';
+  }
+  return `机构动向：${clauses.join('；')}`;
+}
 
 // ---------- 军团意见气候（#50 升级，P1） ----------
 
@@ -200,6 +312,11 @@ export function buildCommonBlock(snapshot: MarketSnapshot): string {
       ? '未披露（上游 2024-08 起停报每日净买额）'
       : `${(funds.northboundNet / 1e8).toFixed(1)} 亿${funds.northAsOf ? `（截至 ${funds.northAsOf}）` : ''}`;
   lines.push(`资金面：两融余额 ${marginText}；北向净买 ${northText}`);
+
+  // 机构动向行（v1.4 #62）：资金面行之后、新闻要点之前；载荷缺省（旧快照）→ 整行省略。
+  // 行在公共块字符串内部——buildUserMessage 三块结构与 seed 块序逐字不变（#62 不新增洗牌块）
+  const instLine = buildInstLine(snapshot.inst);
+  if (instLine) lines.push(instLine);
 
   // 新闻 TopN（截断 50 字/条）
   const news = snapshot.news.items.slice(0, NEWS_TOP_N);

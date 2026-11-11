@@ -14,6 +14,7 @@ import { median, directionOf, bullBearSplit, dispersionOf, isDispersionNarrow, b
 import { applyOffset } from './impact.js';
 import { buildCamps, buildLegionMirror, generateReport, dispersionNote } from './editor.js';
 import { cardContributions } from './event-card.js';
+import { institutionNetFlow, instNarrativeLine } from './institutions.js';
 import { nextTradeDay, computeVol20, quantile, isIntraday } from './dates.js';
 
 export class MarketDataStaleError extends Error {
@@ -72,7 +73,12 @@ export async function runPrediction(deps: PredictDeps): Promise<PredictionRunOut
   for (let k = 1; k <= K; k += 1) {
     // K 轮之间互不可见（#50 澄清）：同一 snapshot、独立种子
     try {
-      const r = await runRound({ ports, cfg, personas: pool, states: deps.states, snapshot: deps.snapshot, round: k, seed: cfg.seed + k });
+      const r = await runRound({
+        ports, cfg, personas: pool, states: deps.states, snapshot: deps.snapshot, round: k, seed: cfg.seed + k,
+        // 机构折算净流（#60）：确定性常数加进每轮（median(NF_i+c)=median(NF_i)+c），
+        // 折算只发生在 institutionNetFlow；snapshot.inst 为 python 原始载荷
+        instNF: institutionNetFlow(deps.snapshot.inst, cfg).netFlow,
+      });
       rounds.push(r);
     } catch (e) {
       if (!(e instanceof QuorumError)) throw e;
@@ -147,7 +153,11 @@ export async function runPrediction(deps: PredictDeps): Promise<PredictionRunOut
       legionMirror: lastMirror, // P5 资金镜像回流（双轨行 + 集中度传闻）
       // 外生输入沿用锚定日（情绪/新闻/资金面冻结，#36 递推规则）
     };
-    const r = await runRound({ ports, cfg, personas: pool, states: workStates, snapshot: workSnapshot, round: d, seed: cfg.seed + d });
+    const r = await runRound({
+      ports, cfg, personas: pool, states: workStates, snapshot: workSnapshot, round: d, seed: cfg.seed + d,
+      // 递推日同样加同一机构常数（workSnapshot 经 spread 透传锚定日 inst，#60：不重算不衰减）
+      instNF: institutionNetFlow(workSnapshot.inst, cfg).netFlow,
+    });
     // 递推日为 K=1 单轮：该轮即当日，无分布可剔除，QuorumError 上抛按「全作废」处理（#54）
     for (const m of r.missing) missingAll.add(m);
     minParticipants = Math.min(minParticipants, r.participants);
@@ -230,6 +240,8 @@ export async function runPrediction(deps: PredictDeps): Promise<PredictionRunOut
     multiBullPct: bullPct,
     degradedFlags: deps.snapshot.degraded.filter((f) => f.degraded).map((f) => `${f.source}（截至 ${f.asOf}）`),
     intradayNote,
+    // 机构动向叙事行（#64）：零 LLM 模板拼装，随日报与兜底模板落档
+    instLine: instNarrativeLine(deps.snapshot.inst),
   });
 
   return {
@@ -251,6 +263,9 @@ export async function runPrediction(deps: PredictDeps): Promise<PredictionRunOut
       rounds,
       legionClimate: anchorClimate, // P1：供下一运行跨运行注入（旧记录缺字段 → null，自愈）
       legionMirror: anchorMirror, // P5：资金镜像跨运行注入（旧记录缺字段 → null，自愈）
+      // 机构决策层（v1.4 #60/#61）：锚定日原始载荷落盘 + 命中口径断代（按当时 cfg 写入）
+      inst: deps.snapshot.inst ?? null,
+      flowScope: cfg.instLayer && cfg.instLayer.enabled ? 'retail+inst' : 'retail',
     },
     committedStates: committed,
   };
